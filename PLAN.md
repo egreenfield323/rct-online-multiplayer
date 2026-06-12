@@ -202,3 +202,13 @@ Ephemeral payloads: `cursor{x,y,tool}` `ghost{kind,...}|null`.
   (workflow + relative base + configurable relay w/ offline fallback) and encrypted
   .park save export/import + monthly autosave.
   `npm run dev` → http://localhost:5173 (ws :3001). `npm start` → :3000. Next: M8 stretch.
+- 2026-06-12 (session 2, art pass): User feedback — assets too flat/undetailed. Searched for
+  CC0 isometric park assets (nothing cohesive exists; RCT rips are copyrighted), so the
+  procedural sprites were rebuilt instead: sprites.ts now draws with a local iso projector
+  (same 2:1 math as the world) — shaded boxes/roofs/striped canopies, sprites carry ax/ay
+  anchors, ride sprites at true footprint scale (3×3 ride ≈ 192px). Gate is a real archway
+  (brick towers, battlements, sheared OPENPARK sign, flags). Renderer: grass speckles+tufts,
+  path edging+paving texture, queue handrails, water depth tint+sparkles, cliff strata+grass
+  lip, track crossties + dark rail underside + wooden trestle supports, detailed train cars,
+  peeps with hair/arms/walk cycle. Verified via zoom-2 Playwright screenshots, iterated on
+  tower cabin/twist/stall signs. Tests/build green.
