@@ -8,8 +8,8 @@ import { Spr, SpriteMap, PEEP_SHIRTS } from './sprites.js';
 
 // ---------------------------------------------------------------- helpers
 
-const GRASS_A = '#58a843';
-const GRASS_B = '#51a03c';
+const GRASS_A = '#55a341';
+const GRASS_B = '#4e9a3a';
 const DIRT = '#8a6b3d';
 const DIRT_DARK = '#6e5530';
 
@@ -214,6 +214,262 @@ export function drawPiece(
   c.restore();
 }
 
+// ---------------------------------------------------------------- ground layer (cached)
+
+// Terrain, cliffs, water bodies, paths, and litter change rarely, so they are
+// rendered into an offscreen canvas covering the viewport plus a margin, and
+// only re-rendered when the world's ground state changes, the zoom changes,
+// or the camera scrolls out of the margin. This is the main perf lever — at
+// rest the per-frame cost is one drawImage instead of thousands of polygons.
+
+const GROUND_MARGIN = 320; // projected px around the viewport
+
+interface GroundCache {
+  cv: HTMLCanvasElement;
+  ox: number; // projected-space origin of the cache
+  oy: number;
+  zoom: number;
+  ver: number;
+}
+
+let ground: GroundCache | null = null;
+let lastVer = 0;
+let lastVerFrame = -999;
+
+function groundVersion(w: World, frame: number): number {
+  if (frame - lastVerFrame < 12) return lastVer; // cheap: re-hash ~1.5×/sec
+  lastVerFrame = frame;
+  let h = 0x811c9dc5;
+  const mix = (v: number) => {
+    h ^= v;
+    h = Math.imul(h, 0x01000193);
+  };
+  for (let i = 0; i < w.heights.length; i++) mix(w.heights[i]);
+  for (let i = 0; i < w.path.length; i++) mix(w.path[i] + (w.water[i] << 3) + (w.litter[i] << 8));
+  lastVer = h >>> 0;
+  return lastVer;
+}
+
+function drawGroundTiles(c: CanvasRenderingContext2D, w: World, x0: number, x1: number, y0: number, y1: number, zoom: number): void {
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = ti(w.size, x, y);
+      const cs = corners(w, x, y);
+      const slope = cs[0] + cs[1] - cs[2] - cs[3];
+      const h = thash(x, y);
+      tilePoly(c, x, y, cs);
+      let col = (x + y) % 2 === 0 ? GRASS_A : GRASS_B;
+      if (slope > 0) col = '#61b54a';
+      else if (slope < 0) col = '#428b35';
+      c.fillStyle = col;
+      c.fill();
+      c.strokeStyle = 'rgba(0,0,0,0.06)';
+      c.stroke();
+
+      const pk = w.path[i];
+
+      // grass texture: sparse speckles + occasional tuft (skip under paths)
+      if (pk === 0 && zoom >= 1) {
+        const n = 2 + ((h * 7) | 0) % 3;
+        for (let k = 0; k < n; k++) {
+          const fx = 0.15 + ((h * 113 + k * 47) % 70) / 100;
+          const fy = 0.15 + ((h * 191 + k * 83) % 70) / 100;
+          const q = tilePoint(x, y, cs, fx, fy);
+          c.fillStyle = (k + ((h * 10) | 0)) % 2 ? 'rgba(255,250,210,0.14)' : 'rgba(16,56,16,0.2)';
+          c.fillRect(q.sx, q.sy - 1, 2, 1.5);
+        }
+        if (h > 0.93) {
+          const q = tilePoint(x, y, cs, 0.5, 0.5);
+          c.strokeStyle = 'rgba(24,84,26,0.55)';
+          c.lineWidth = 1;
+          c.beginPath();
+          c.moveTo(q.sx - 2, q.sy); c.lineTo(q.sx - 3, q.sy - 4);
+          c.moveTo(q.sx, q.sy); c.lineTo(q.sx, q.sy - 5);
+          c.moveTo(q.sx + 2, q.sy); c.lineTo(q.sx + 3, q.sy - 4);
+          c.stroke();
+        }
+        // warm dappled light patches (Stardew-style warmth)
+        if (h > 0.55 && h < 0.62) {
+          tilePoly(c, x, y, cs);
+          c.fillStyle = 'rgba(255,236,160,0.07)';
+          c.fill();
+        }
+      }
+
+      // cliff faces toward the camera (south +y and east +x edges)
+      {
+        const nb = y + 1 < w.size ? [vh(w, x, y + 1), vh(w, x + 1, y + 1)] : [0, 0];
+        if (cs[3] > nb[0] || cs[2] > nb[1]) {
+          const a = proj(x, y + 1, cs[3]);
+          const b = proj(x + 1, y + 1, cs[2]);
+          const a2 = proj(x, y + 1, nb[0]);
+          const b2 = proj(x + 1, y + 1, nb[1]);
+          c.beginPath(); c.moveTo(a.sx, a.sy); c.lineTo(b.sx, b.sy); c.lineTo(b2.sx, b2.sy); c.lineTo(a2.sx, a2.sy); c.closePath();
+          c.fillStyle = DIRT;
+          c.fill();
+          c.strokeStyle = 'rgba(60,40,15,0.4)';
+          c.lineWidth = 1;
+          const depth = Math.max(cs[3] - nb[0], cs[2] - nb[1]);
+          for (let s = 1; s < depth; s++) {
+            const f = s / depth;
+            c.beginPath();
+            c.moveTo(a.sx, a.sy + (a2.sy - a.sy) * f);
+            c.lineTo(b.sx, b.sy + (b2.sy - b.sy) * f);
+            c.stroke();
+          }
+          c.strokeStyle = '#3e7d32';
+          c.lineWidth = 2;
+          c.beginPath(); c.moveTo(a.sx, a.sy + 1); c.lineTo(b.sx, b.sy + 1); c.stroke();
+        }
+        const nbe = x + 1 < w.size ? [vh(w, x + 1, y), vh(w, x + 1, y + 1)] : [0, 0];
+        if (cs[1] > nbe[0] || cs[2] > nbe[1]) {
+          const a = proj(x + 1, y, cs[1]);
+          const b = proj(x + 1, y + 1, cs[2]);
+          const a2 = proj(x + 1, y, nbe[0]);
+          const b2 = proj(x + 1, y + 1, nbe[1]);
+          c.beginPath(); c.moveTo(a.sx, a.sy); c.lineTo(b.sx, b.sy); c.lineTo(b2.sx, b2.sy); c.lineTo(a2.sx, a2.sy); c.closePath();
+          c.fillStyle = DIRT_DARK;
+          c.fill();
+          c.strokeStyle = '#3e7d32';
+          c.lineWidth = 2;
+          c.beginPath(); c.moveTo(a.sx, a.sy + 1); c.lineTo(b.sx, b.sy + 1); c.stroke();
+        }
+      }
+
+      // water body (RCT-style deep teal; animated sparkles drawn live)
+      const wl = w.water[i];
+      if (wl > tileMinH(w, x, y)) {
+        const depth = wl - tileMinH(w, x, y);
+        tilePoly(c, x, y, [wl, wl, wl, wl]);
+        c.fillStyle = depth > 2 ? 'rgba(18,96,118,0.92)' : 'rgba(28,118,140,0.85)';
+        c.fill();
+        c.strokeStyle = 'rgba(170,225,235,0.4)';
+        c.stroke();
+      }
+
+      // path
+      if (pk !== 0) {
+        const conn = pathConnections(w, x, y);
+        const main = pk === 1 ? '#c4ad7c' : '#7d99c0';
+        const edge = pk === 1 ? '#8f7c52' : '#54688a';
+        tilePoly(c, x, y, cs);
+        c.fillStyle = main;
+        c.fill();
+        const edgePts = [
+          [proj(x, y, cs[0]), proj(x + 1, y, cs[1])],
+          [proj(x + 1, y, cs[1]), proj(x + 1, y + 1, cs[2])],
+          [proj(x + 1, y + 1, cs[2]), proj(x, y + 1, cs[3])],
+          [proj(x, y + 1, cs[3]), proj(x, y, cs[0])],
+        ];
+        const sideForDir = [1, 2, 3, 0];
+        c.lineWidth = 2.5;
+        for (let d = 0; d < 4; d++) {
+          if (conn[d]) continue;
+          const [a, b] = edgePts[sideForDir[d]];
+          c.strokeStyle = edge;
+          c.beginPath(); c.moveTo(a.sx, a.sy - 1); c.lineTo(b.sx, b.sy - 1); c.stroke();
+        }
+        if (zoom >= 1) {
+          c.strokeStyle = pk === 1 ? 'rgba(110,90,55,0.3)' : 'rgba(50,70,110,0.35)';
+          c.lineWidth = 1;
+          const m1 = tilePoint(x, y, cs, 0.5, 0);
+          const m2 = tilePoint(x, y, cs, 0.5, 1);
+          const m3 = tilePoint(x, y, cs, 0, 0.5);
+          const m4 = tilePoint(x, y, cs, 1, 0.5);
+          c.beginPath(); c.moveTo(m1.sx, m1.sy); c.lineTo(m2.sx, m2.sy); c.moveTo(m3.sx, m3.sy); c.lineTo(m4.sx, m4.sy); c.stroke();
+        }
+        if (pk === 2) {
+          c.strokeStyle = '#39506e';
+          c.lineWidth = 1.5;
+          for (const f of [0.22, 0.78]) {
+            const a = tilePoint(x, y, cs, conn[0] || conn[2] ? 0.05 : f, conn[0] || conn[2] ? f : 0.05);
+            const b = tilePoint(x, y, cs, conn[0] || conn[2] ? 0.95 : f, conn[0] || conn[2] ? f : 0.95);
+            c.beginPath(); c.moveTo(a.sx, a.sy - 4); c.lineTo(b.sx, b.sy - 4); c.stroke();
+            c.beginPath(); c.moveTo(a.sx, a.sy); c.lineTo(a.sx, a.sy - 4); c.moveTo(b.sx, b.sy); c.lineTo(b.sx, b.sy - 4); c.stroke();
+          }
+        }
+      }
+
+      // litter
+      const lit = w.litter[i];
+      if (lit > 0 && pk !== 0) {
+        for (let k = 0; k < Math.min(4, lit); k++) {
+          const q = tilePoint(x, y, cs, 0.2 + ((k * 37) % 55) / 100, 0.2 + ((k * 53) % 55) / 100);
+          c.fillStyle = k % 2 ? '#6b5e42' : '#9b8d6b';
+          c.fillRect(q.sx - 1, q.sy - 1, 3, 2);
+        }
+      }
+    }
+  }
+}
+
+// projected-space rect of the viewport
+function viewRect(canvas: HTMLCanvasElement, cam: Camera) {
+  return {
+    vx: cam.x - canvas.width / 2 / cam.zoom,
+    vy: cam.y - canvas.height / 2 / cam.zoom,
+    vw: canvas.width / cam.zoom,
+    vh: canvas.height / cam.zoom,
+  };
+}
+
+function tileBoundsFor(w: World, vx: number, vy: number, vw2: number, vh2: number) {
+  const tl = unproj(vx, vy - ZH * 30, 0);
+  const br = unproj(vx + vw2, vy + vh2 + ZH * 4, 0);
+  const trc = unproj(vx + vw2, vy - ZH * 30, 0);
+  const blc = unproj(vx, vy + vh2 + ZH * 4, 0);
+  return {
+    x0: Math.max(0, Math.floor(Math.min(tl.wx, blc.wx)) - 1),
+    x1: Math.min(w.size - 1, Math.ceil(Math.max(br.wx, trc.wx)) + 1),
+    y0: Math.max(0, Math.floor(Math.min(tl.wy, trc.wy)) - 1),
+    y1: Math.min(w.size - 1, Math.ceil(Math.max(br.wy, blc.wy)) + 1),
+  };
+}
+
+function ensureGround(canvas: HTMLCanvasElement, w: World, cam: Camera, frame: number): GroundCache {
+  const { vx, vy, vw, vh: vhh } = viewRect(canvas, cam);
+  const ver = groundVersion(w, frame);
+  const fits =
+    ground &&
+    ground.zoom === cam.zoom &&
+    ground.ver === ver &&
+    vx >= ground.ox &&
+    vy >= ground.oy &&
+    vx + vw <= ground.ox + ground.cv.width / cam.zoom &&
+    vy + vhh <= ground.oy + ground.cv.height / cam.zoom;
+  if (fits) return ground!;
+
+  const ox = vx - GROUND_MARGIN;
+  const oy = vy - GROUND_MARGIN;
+  const pw = Math.ceil((vw + GROUND_MARGIN * 2) * cam.zoom);
+  const ph = Math.ceil((vhh + GROUND_MARGIN * 2) * cam.zoom);
+  if (!ground || ground.cv.width !== pw || ground.cv.height !== ph) {
+    const cv = document.createElement('canvas');
+    cv.width = pw;
+    cv.height = ph;
+    ground = { cv, ox, oy, zoom: cam.zoom, ver };
+  } else {
+    ground.ox = ox;
+    ground.oy = oy;
+    ground.zoom = cam.zoom;
+    ground.ver = ver;
+  }
+  const gc = ground.cv.getContext('2d')!;
+  gc.setTransform(1, 0, 0, 1, 0, 0);
+  gc.fillStyle = '#1d2a38';
+  gc.fillRect(0, 0, pw, ph);
+  gc.setTransform(cam.zoom, 0, 0, cam.zoom, -ox * cam.zoom, -oy * cam.zoom);
+  const b = tileBoundsFor(w, ox, oy, vw + GROUND_MARGIN * 2, vhh + GROUND_MARGIN * 2);
+  drawGroundTiles(gc, w, b.x0, b.x1, b.y0, b.y1, cam.zoom);
+  return ground;
+}
+
+// force a ground re-render next frame (e.g. after loading a save)
+export function invalidateGround(): void {
+  ground = null;
+  lastVerFrame = -999;
+}
+
 // ---------------------------------------------------------------- drawables
 
 interface Drawable {
@@ -239,182 +495,36 @@ export function render(
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.fillStyle = '#1d2a38';
   c.fillRect(0, 0, canvas.width, canvas.height);
+
+  // cached ground layer
+  const g = ensureGround(canvas, w, cam, frame);
+  const { vx, vy } = viewRect(canvas, cam);
+  c.drawImage(g.cv, Math.round((g.ox - vx) * cam.zoom), Math.round((g.oy - vy) * cam.zoom));
+
   c.setTransform(cam.zoom, 0, 0, cam.zoom, canvas.width / 2 - cam.x * cam.zoom, canvas.height / 2 - cam.y * cam.zoom);
   c.imageSmoothingEnabled = false;
 
-  // visible tile bounds (unproject canvas corners, pad for height)
-  const tl = unproj(cam.x - canvas.width / 2 / cam.zoom, cam.y - canvas.height / 2 / cam.zoom - ZH * 30, 0);
-  const br = unproj(cam.x + canvas.width / 2 / cam.zoom, cam.y + canvas.height / 2 / cam.zoom + ZH * 4, 0);
-  const trc = unproj(cam.x + canvas.width / 2 / cam.zoom, cam.y - canvas.height / 2 / cam.zoom - ZH * 30, 0);
-  const blc = unproj(cam.x - canvas.width / 2 / cam.zoom, cam.y + canvas.height / 2 / cam.zoom + ZH * 4, 0);
-  const x0 = Math.max(0, Math.floor(Math.min(tl.wx, blc.wx)) - 1);
-  const x1 = Math.min(w.size - 1, Math.ceil(Math.max(br.wx, trc.wx)) + 1);
-  const y0 = Math.max(0, Math.floor(Math.min(tl.wy, trc.wy)) - 1);
-  const y1 = Math.min(w.size - 1, Math.ceil(Math.max(br.wy, blc.wy)) + 1);
+  const { x0, x1, y0, y1 } = tileBoundsFor(w, vx, vy, canvas.width / cam.zoom, canvas.height / cam.zoom);
 
-  const drawables: Drawable[] = [];
-
-  // ---- pass 1: ground ----
+  // live water sparkles over the cached water
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const i = ti(w.size, x, y);
-      const cs = corners(w, x, y);
-      const slope = cs[0] + cs[1] - cs[2] - cs[3];
-      const h = thash(x, y);
-      tilePoly(c, x, y, cs);
-      let col = (x + y) % 2 === 0 ? GRASS_A : GRASS_B;
-      if (slope > 0) col = '#65b94e';
-      else if (slope < 0) col = '#46913a';
-      c.fillStyle = col;
-      c.fill();
-      c.strokeStyle = 'rgba(0,0,0,0.06)';
-      c.stroke();
-
-      const pk = w.path[i];
-
-      // grass texture: sparse speckles + occasional tuft (skip under paths)
-      if (pk === 0 && cam.zoom >= 1) {
-        const n = 2 + ((h * 7) | 0) % 3;
-        for (let k = 0; k < n; k++) {
-          const fx = 0.15 + ((h * 113 + k * 47) % 70) / 100;
-          const fy = 0.15 + ((h * 191 + k * 83) % 70) / 100;
-          const q = tilePoint(x, y, cs, fx, fy);
-          c.fillStyle = (k + ((h * 10) | 0)) % 2 ? 'rgba(255,255,230,0.13)' : 'rgba(20,60,20,0.18)';
-          c.fillRect(q.sx, q.sy - 1, 2, 1.5);
-        }
-        if (h > 0.93) {
-          const q = tilePoint(x, y, cs, 0.5, 0.5);
-          c.strokeStyle = 'rgba(28,90,30,0.5)';
-          c.lineWidth = 1;
-          c.beginPath();
-          c.moveTo(q.sx - 2, q.sy); c.lineTo(q.sx - 3, q.sy - 4);
-          c.moveTo(q.sx, q.sy); c.lineTo(q.sx, q.sy - 5);
-          c.moveTo(q.sx + 2, q.sy); c.lineTo(q.sx + 3, q.sy - 4);
-          c.stroke();
-        }
-      }
-
-      // cliff faces toward the camera (south +y and east +x edges)
-      {
-        const nb = y + 1 < w.size ? [vh(w, x, y + 1), vh(w, x + 1, y + 1)] : [0, 0];
-        if (cs[3] > nb[0] || cs[2] > nb[1]) {
-          const a = proj(x, y + 1, cs[3]);
-          const b = proj(x + 1, y + 1, cs[2]);
-          const a2 = proj(x, y + 1, nb[0]);
-          const b2 = proj(x + 1, y + 1, nb[1]);
-          c.beginPath(); c.moveTo(a.sx, a.sy); c.lineTo(b.sx, b.sy); c.lineTo(b2.sx, b2.sy); c.lineTo(a2.sx, a2.sy); c.closePath();
-          c.fillStyle = DIRT;
-          c.fill();
-          // strata
-          c.strokeStyle = 'rgba(60,40,15,0.4)';
-          c.lineWidth = 1;
-          const depth = Math.max(cs[3] - nb[0], cs[2] - nb[1]);
-          for (let s = 1; s < depth; s++) {
-            const f = s / depth;
-            c.beginPath();
-            c.moveTo(a.sx, a.sy + (a2.sy - a.sy) * f);
-            c.lineTo(b.sx, b.sy + (b2.sy - b.sy) * f);
-            c.stroke();
-          }
-          // grass lip
-          c.strokeStyle = '#3e7d32';
-          c.lineWidth = 2;
-          c.beginPath(); c.moveTo(a.sx, a.sy + 1); c.lineTo(b.sx, b.sy + 1); c.stroke();
-        }
-        const nbe = x + 1 < w.size ? [vh(w, x + 1, y), vh(w, x + 1, y + 1)] : [0, 0];
-        if (cs[1] > nbe[0] || cs[2] > nbe[1]) {
-          const a = proj(x + 1, y, cs[1]);
-          const b = proj(x + 1, y + 1, cs[2]);
-          const a2 = proj(x + 1, y, nbe[0]);
-          const b2 = proj(x + 1, y + 1, nbe[1]);
-          c.beginPath(); c.moveTo(a.sx, a.sy); c.lineTo(b.sx, b.sy); c.lineTo(b2.sx, b2.sy); c.lineTo(a2.sx, a2.sy); c.closePath();
-          c.fillStyle = DIRT_DARK;
-          c.fill();
-          c.strokeStyle = '#3e7d32';
-          c.lineWidth = 2;
-          c.beginPath(); c.moveTo(a.sx, a.sy + 1); c.lineTo(b.sx, b.sy + 1); c.stroke();
-        }
-      }
-
-      // water
       const wl = w.water[i];
-      if (wl > tileMinH(w, x, y)) {
-        const depth = wl - tileMinH(w, x, y);
-        tilePoly(c, x, y, [wl, wl, wl, wl]);
-        c.fillStyle = depth > 2 ? 'rgba(24,84,160,0.88)' : 'rgba(42,116,190,0.8)';
-        c.fill();
-        c.strokeStyle = 'rgba(160,210,255,0.35)';
-        c.stroke();
-        // animated sparkles
-        const ph = Math.sin(frame * 0.045 + h * 12);
-        if (ph > 0.4) {
-          const q = tilePoint(x, y, [wl, wl, wl, wl] as [number, number, number, number], 0.25 + h * 0.5, 0.3 + ((h * 7) % 0.5));
-          c.fillStyle = `rgba(220,245,255,${(ph - 0.4) * 0.9})`;
-          c.fillRect(q.sx - 2, q.sy, 4, 1.2);
-          c.fillRect(q.sx + 6, q.sy + 3, 3, 1);
-        }
-      }
-
-      // path
-      if (pk !== 0) {
-        const conn = pathConnections(w, x, y);
-        const main = pk === 1 ? '#c4ad7c' : '#7d99c0';
-        const edge = pk === 1 ? '#8f7c52' : '#54688a';
-        tilePoly(c, x, y, cs);
-        c.fillStyle = main;
-        c.fill();
-        // edging strips on unconnected sides
-        const edgePts = [
-          [proj(x, y, cs[0]), proj(x + 1, y, cs[1])], // -y side (d3)
-          [proj(x + 1, y, cs[1]), proj(x + 1, y + 1, cs[2])], // +x side (d0)
-          [proj(x + 1, y + 1, cs[2]), proj(x, y + 1, cs[3])], // +y side (d1)
-          [proj(x, y + 1, cs[3]), proj(x, y, cs[0])], // -x side (d2)
-        ];
-        const sideForDir = [1, 2, 3, 0]; // dir 0..3 → edge index
-        c.lineWidth = 2.5;
-        for (let d = 0; d < 4; d++) {
-          if (conn[d]) continue;
-          const [a, b] = edgePts[sideForDir[d]];
-          c.strokeStyle = edge;
-          c.beginPath(); c.moveTo(a.sx, a.sy - 1); c.lineTo(b.sx, b.sy - 1); c.stroke();
-        }
-        // paving texture
-        if (cam.zoom >= 1) {
-          c.strokeStyle = pk === 1 ? 'rgba(110,90,55,0.3)' : 'rgba(50,70,110,0.35)';
-          c.lineWidth = 1;
-          const m1 = tilePoint(x, y, cs, 0.5, 0);
-          const m2 = tilePoint(x, y, cs, 0.5, 1);
-          const m3 = tilePoint(x, y, cs, 0, 0.5);
-          const m4 = tilePoint(x, y, cs, 1, 0.5);
-          c.beginPath(); c.moveTo(m1.sx, m1.sy); c.lineTo(m2.sx, m2.sy); c.moveTo(m3.sx, m3.sy); c.lineTo(m4.sx, m4.sy); c.stroke();
-        }
-        if (pk === 2) {
-          // queue handrails along the walking direction
-          c.strokeStyle = '#39506e';
-          c.lineWidth = 1.5;
-          for (const f of [0.22, 0.78]) {
-            const a = tilePoint(x, y, cs, conn[0] || conn[2] ? 0.05 : f, conn[0] || conn[2] ? f : 0.05);
-            const b = tilePoint(x, y, cs, conn[0] || conn[2] ? 0.95 : f, conn[0] || conn[2] ? f : 0.95);
-            c.beginPath(); c.moveTo(a.sx, a.sy - 4); c.lineTo(b.sx, b.sy - 4); c.stroke();
-            // posts
-            c.beginPath(); c.moveTo(a.sx, a.sy); c.lineTo(a.sx, a.sy - 4); c.moveTo(b.sx, b.sy); c.lineTo(b.sx, b.sy - 4); c.stroke();
-          }
-        }
-      }
-
-      // litter
-      const lit = w.litter[i];
-      if (lit > 0 && pk !== 0) {
-        for (let k = 0; k < Math.min(4, lit); k++) {
-          const q = tilePoint(x, y, cs, 0.2 + ((k * 37) % 55) / 100, 0.2 + ((k * 53) % 55) / 100);
-          c.fillStyle = k % 2 ? '#6b5e42' : '#9b8d6b';
-          c.fillRect(q.sx - 1, q.sy - 1, 3, 2);
-        }
+      if (wl === 0 || wl <= tileMinH(w, x, y)) continue;
+      const h = thash(x, y);
+      const ph = Math.sin(frame * 0.045 + h * 12);
+      if (ph > 0.4) {
+        const q = proj(x + 0.25 + h * 0.5, y + 0.3 + ((h * 7) % 0.5), wl);
+        c.fillStyle = `rgba(220,245,255,${(ph - 0.4) * 0.9})`;
+        c.fillRect(q.sx - 2, q.sy, 4, 1.2);
+        c.fillRect(q.sx + 6, q.sy + 3, 3, 1);
       }
     }
   }
 
-  // ---- pass 2: collect drawables ----
+  const drawables: Drawable[] = [];
+
   // scenery + path furniture
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
@@ -472,7 +582,6 @@ export function render(
       drawables.push({
         key: cx + cy - n / 2 + 0.6,
         draw: () => {
-          // paved apron under the ride
           const p0 = proj(ride.x, ride.y, z);
           const p1 = proj(ride.x + n, ride.y, z);
           const p2 = proj(ride.x + n, ride.y + n, z);
@@ -513,7 +622,6 @@ export function render(
               c.save();
               c.translate(q.sx, q.sy);
               c.rotate(ang);
-              // body with shaded skirt + nose
               c.fillStyle = 'rgba(0,0,0,0.3)';
               c.fillRect(-8, 2, 16, 3);
               c.fillStyle = colors[0];
@@ -590,6 +698,9 @@ function drawPeep(c: CanvasRenderingContext2D, w: World, p: Peep, frame: number)
   const bob = Math.abs(step) * 0.7;
   c.fillStyle = 'rgba(0,0,0,0.28)';
   c.beginPath(); c.ellipse(q.sx, q.sy, 3.5, 1.6, 0, 0, 7); c.fill();
+  // silhouette pop (matches the sprite outline pass)
+  c.fillStyle = 'rgba(24,18,12,0.7)';
+  c.fillRect(q.sx - 3.2, q.sy - 14.7 - bob, 7, 15);
   // legs (scissor while walking)
   c.fillStyle = '#3d3d6b';
   c.fillRect(q.sx - 2 + step, q.sy - 4, 2, 4);

@@ -53,7 +53,7 @@ function isoSprite(
   S[name] = { cv, ax, ay };
 }
 
-function poly(c: Ctx2, pts: [number, number][], fill: string, stroke?: string): void {
+function poly(c: Ctx2, pts: [number, number][], fill: string | CanvasGradient, stroke?: string): void {
   c.beginPath();
   c.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
@@ -67,46 +67,81 @@ function poly(c: Ctx2, pts: [number, number][], fill: string, stroke?: string): 
   }
 }
 
-// shaded iso box over footprint [x0..x1]×[y0..y1] (tile units), z0..z1 (height units)
-function box(c: Ctx2, p: P, x0: number, y0: number, x1: number, y1: number, z0: number, z1: number, col: string, outline = true): void {
-  const o = outline ? shade(col, 0.45) : undefined;
-  // right face (+x side, toward screen lower-right)
-  poly(c, [p(x1, y0, z1), p(x1, y1, z1), p(x1, y1, z0), p(x1, y0, z0)], shade(col, 0.72), o);
-  // left face (+y side, toward screen lower-left)
-  poly(c, [p(x1, y1, z1), p(x0, y1, z1), p(x0, y1, z0), p(x1, y1, z0)], shade(col, 0.88), o);
-  // top
-  poly(c, [p(x0, y0, z1), p(x1, y0, z1), p(x1, y1, z1), p(x0, y1, z1)], shade(col, 1.12), o);
+// linear gradient between two projected points (pre-rendered-3D face shading)
+function grad(c: Ctx2, a: [number, number], b: [number, number], col0: string, col1: string): CanvasGradient {
+  const g = c.createLinearGradient(a[0], a[1], b[0], b[1]);
+  g.addColorStop(0, col0);
+  g.addColorStop(1, col1);
+  return g;
 }
 
-// pyramid / hipped roof over a footprint
+// shaded iso box over footprint [x0..x1]×[y0..y1] (tile units), z0..z1 (height units).
+// Light from the upper-left (RCT-style): top brightest, left face mid, right face dark,
+// every face gradient-shaded toward the ground with a specular line on the top edges.
+function box(c: Ctx2, p: P, x0: number, y0: number, x1: number, y1: number, z0: number, z1: number, col: string, outline = true): void {
+  const o = outline ? shade(col, 0.42) : undefined;
+  // right face (+x side, toward screen lower-right) — darkest, in shade
+  poly(c, [p(x1, y0, z1), p(x1, y1, z1), p(x1, y1, z0), p(x1, y0, z0)],
+    grad(c, p(x1, y0, z1), p(x1, y0, z0), shade(col, 0.78), shade(col, 0.55)), o);
+  // left face (+y side, toward screen lower-left) — mid light
+  poly(c, [p(x1, y1, z1), p(x0, y1, z1), p(x0, y1, z0), p(x1, y1, z0)],
+    grad(c, p(x0, y1, z1), p(x0, y1, z0), shade(col, 0.98), shade(col, 0.74)), o);
+  // top — brightest toward the back-left corner (light direction)
+  poly(c, [p(x0, y0, z1), p(x1, y0, z1), p(x1, y1, z1), p(x0, y1, z1)],
+    grad(c, p(x0, y0, z1), p(x1, y1, z1), shade(col, 1.26), shade(col, 1.04)), o);
+  // specular highlight on the two top edges facing the light
+  c.strokeStyle = 'rgba(255,255,240,0.4)';
+  c.lineWidth = 1;
+  const tA = p(x0, y0, z1), tB = p(x1, y0, z1), tC = p(x0, y1, z1);
+  c.beginPath(); c.moveTo(tC[0], tC[1]); c.lineTo(tA[0], tA[1]); c.lineTo(tB[0], tB[1]); c.stroke();
+}
+
+// pyramid / hipped roof over a footprint, gradient-lit toward the apex
 function roof(c: Ctx2, p: P, x0: number, y0: number, x1: number, y1: number, zBase: number, zApex: number, col: string): void {
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   const apex = p(cx, cy, zApex);
-  const o = shade(col, 0.45);
-  poly(c, [p(x1, y0, zBase), p(x1, y1, zBase), apex], shade(col, 0.7), o); // right
-  poly(c, [p(x1, y1, zBase), p(x0, y1, zBase), apex], shade(col, 0.9), o); // front-left
-  poly(c, [p(x0, y0, zBase), p(x1, y0, zBase), apex], shade(col, 1.1), o); // back-right (visible sliver)
+  const o = shade(col, 0.42);
+  poly(c, [p(x1, y0, zBase), p(x1, y1, zBase), apex],
+    grad(c, apex, p(x1, y1, zBase), shade(col, 0.82), shade(col, 0.55)), o); // right
+  poly(c, [p(x1, y1, zBase), p(x0, y1, zBase), apex],
+    grad(c, apex, p(x0, y1, zBase), shade(col, 1.05), shade(col, 0.78)), o); // front-left
+  poly(c, [p(x0, y0, zBase), p(x1, y0, zBase), apex],
+    grad(c, apex, p(x0, y0, zBase), shade(col, 1.3), shade(col, 1.05)), o); // back, catches the light
+  // ridge highlights
+  c.strokeStyle = 'rgba(255,255,240,0.35)';
+  c.lineWidth = 1;
+  const rA = p(x0, y1, zBase), rB = p(x0, y0, zBase);
+  c.beginPath(); c.moveTo(rA[0], rA[1]); c.lineTo(apex[0], apex[1]); c.lineTo(rB[0], rB[1]); c.stroke();
 }
 
-// striped conical canopy (carousel top): fan of triangles around the apex
+// striped conical canopy (carousel top): fan of triangles around the apex,
+// lit from the upper-left so the cone reads as a volume
 function canopy(c: Ctx2, p: P, cx: number, cy: number, r: number, zBase: number, zApex: number, colA: string, colB: string, segs = 12): void {
   const apex = p(cx, cy, zApex);
+  const lightDir = -Math.PI * 0.75; // upper-left
   for (let i = 0; i < segs; i++) {
     const a0 = (i / segs) * Math.PI * 2;
     const a1 = ((i + 1) / segs) * Math.PI * 2;
+    const mid = (a0 + a1) / 2;
     const q0 = p(cx + Math.cos(a0) * r, cy + Math.sin(a0) * r, zBase);
     const q1 = p(cx + Math.cos(a1) * r, cy + Math.sin(a1) * r, zBase);
-    const front = Math.sin((a0 + a1) / 2) > -0.4 ? 1 : 0.8;
-    poly(c, [q0, q1, apex], shade(i % 2 ? colA : colB, front));
+    // facing-the-light factor: 1.25 lit side → 0.65 shadow side
+    const lit = 0.95 + 0.3 * Math.cos(mid - lightDir);
+    const base = shade(i % 2 ? colA : colB, lit);
+    poly(c, [q0, q1, apex], grad(c, apex, [(q0[0] + q1[0]) / 2, (q0[1] + q1[1]) / 2], shade(base, 1.12), shade(base, 0.88)));
   }
 }
 
 // flat ellipse on the ground plane (shadow / platter)
 function disc(c: Ctx2, p: P, cx: number, cy: number, r: number, z: number, col: string, stroke?: string): void {
   const [sx, sy] = p(cx, cy, z);
+  // subtle radial shading so platters don't read flat
+  const g = c.createRadialGradient(sx - r * 14, sy - r * 8, r * 4, sx, sy, r * 45);
+  g.addColorStop(0, shade(col.startsWith('rgba') ? '#888888' : col, 1.12));
+  g.addColorStop(1, col.startsWith('rgba') ? col : shade(col, 0.85));
   c.beginPath();
   c.ellipse(sx, sy, r * 45, r * 22.5, 0, 0, Math.PI * 2);
-  c.fillStyle = col;
+  c.fillStyle = col.startsWith('rgba') ? col : g;
   c.fill();
   if (stroke) {
     c.strokeStyle = stroke;
@@ -114,8 +149,45 @@ function disc(c: Ctx2, p: P, cx: number, cy: number, r: number, z: number, col: 
   }
 }
 
+// soft contact shadow (radial falloff, like a pre-rendered drop shadow)
 function shadow(c: Ctx2, p: P, r: number): void {
-  disc(c, p, 0, 0, r, 0, 'rgba(20,40,16,0.25)');
+  const [sx, sy] = p(0, 0, 0);
+  const g = c.createRadialGradient(sx, sy, 1, sx, sy, r * 45);
+  g.addColorStop(0, 'rgba(16,32,12,0.38)');
+  g.addColorStop(0.7, 'rgba(16,32,12,0.18)');
+  g.addColorStop(1, 'rgba(16,32,12,0)');
+  c.save();
+  c.translate(sx, sy);
+  c.scale(1, 0.5);
+  c.translate(-sx, -sy);
+  c.fillStyle = g;
+  c.beginPath();
+  c.arc(sx, sy, r * 45, 0, Math.PI * 2);
+  c.fill();
+  c.restore();
+}
+
+// silhouette outline pass: dark 1px rim around the whole sprite (the RCT /
+// Stardew look that makes objects pop off the terrain)
+function outlineSprite(spr: Spr): Spr {
+  const { cv } = spr;
+  // silhouette = sprite alpha filled with the outline color
+  const sil = document.createElement('canvas');
+  sil.width = cv.width;
+  sil.height = cv.height;
+  const sc = sil.getContext('2d')!;
+  sc.drawImage(cv, 0, 0);
+  sc.globalCompositeOperation = 'source-in';
+  sc.fillStyle = 'rgba(24,18,12,0.85)';
+  sc.fillRect(0, 0, sil.width, sil.height);
+  const out = document.createElement('canvas');
+  out.width = cv.width + 2;
+  out.height = cv.height + 2;
+  const oc = out.getContext('2d')!;
+  oc.imageSmoothingEnabled = false;
+  for (const [dx, dy] of [[0, 1], [2, 1], [1, 0], [1, 2]]) oc.drawImage(sil, dx, dy);
+  oc.drawImage(cv, 1, 1);
+  return { cv: out, ax: spr.ax + 1, ay: spr.ay + 1 };
 }
 
 // little blobby foliage cluster with 3-tone shading
@@ -674,6 +746,9 @@ export function generateSprites(): SpriteMap {
       c.beginPath(); c.ellipse(qx + 2, qy - 4, 2.5, 1.5, 0, 0, 7); c.fill();
     }
   });
+
+  // rim every sprite with a dark silhouette outline
+  for (const key of Object.keys(S)) S[key] = outlineSprite(S[key]);
 
   return S;
 }
