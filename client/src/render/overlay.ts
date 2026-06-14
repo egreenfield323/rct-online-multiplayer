@@ -1,6 +1,7 @@
-import { World, corners, vh, rideDef } from '@park/shared';
+import { World, Peep, corners, vh, rideDef, isWalkable } from '@park/shared';
 import { Camera, proj } from './iso.js';
 import { drawPiece } from './renderer.js';
+import { PEEP_SHIRTS } from './sprites.js';
 import { Ghost, Peer } from '../state.js';
 
 // Collaborative layer: other players' named cursors (always visible) and
@@ -61,6 +62,38 @@ function label(c: CanvasRenderingContext2D, x: number, y: number, text: string, 
   c.textAlign = 'center';
   c.textBaseline = 'middle';
   c.fillText(text, x, y);
+  c.restore();
+}
+
+// A guest being dragged: highlight the drop tile (green on a path, red off it)
+// and draw the lifted guest hovering above the cursor.
+export function drawCarriedPeep(c: CanvasRenderingContext2D, w: World, peep: Peep, wx: number, wy: number): void {
+  const tx = Math.floor(wx), ty = Math.floor(wy);
+  c.save();
+  if (tx >= 0 && ty >= 0 && tx < w.size && ty < w.size) {
+    const ok = isWalkable(w, tx, ty);
+    const cs = corners(w, tx, ty);
+    const p0 = proj(tx, ty, cs[0]), p1 = proj(tx + 1, ty, cs[1]), p2 = proj(tx + 1, ty + 1, cs[2]), p3 = proj(tx, ty + 1, cs[3]);
+    c.globalAlpha = 0.5;
+    c.beginPath();
+    c.moveTo(p0.sx, p0.sy); c.lineTo(p1.sx, p1.sy); c.lineTo(p2.sx, p2.sy); c.lineTo(p3.sx, p3.sy); c.closePath();
+    c.fillStyle = ok ? '#5dca5d' : '#d33';
+    c.fill();
+    c.globalAlpha = 1;
+  }
+  const cz = vh(w, Math.max(0, Math.min(w.size - 1, tx)), Math.max(0, Math.min(w.size - 1, ty)));
+  const q = proj(wx, wy, cz);
+  const lift = 24;
+  c.fillStyle = 'rgba(0,0,0,0.22)';
+  c.beginPath(); c.ellipse(q.sx, q.sy, 4, 2, 0, 0, 7); c.fill();
+  const shirt = PEEP_SHIRTS[peep.color % PEEP_SHIRTS.length];
+  c.fillStyle = shirt;
+  c.fillRect(q.sx - 3, q.sy - lift - 5, 6, 7);
+  c.fillStyle = '#ffd9b3';
+  c.fillRect(q.sx - 2.5, q.sy - lift - 11, 5, 5);
+  c.strokeStyle = 'rgba(255,255,255,0.65)';
+  c.lineWidth = 1;
+  c.beginPath(); c.moveTo(q.sx, q.sy - lift - 11); c.lineTo(q.sx, q.sy - lift - 18); c.stroke();
   c.restore();
 }
 

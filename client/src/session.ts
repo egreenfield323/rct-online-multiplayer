@@ -1,5 +1,5 @@
 import { World, Command, TICK_MS, createWorld, stepWorld, serializeWorld, deserializeWorld } from '@park/shared';
-import { Net } from './net.js';
+import { PeerNet } from './peernet.js';
 import { Ghost, Peer, LobbyPlayer } from './state.js';
 import { PLAYER_COLORS } from './render/sprites.js';
 
@@ -20,7 +20,7 @@ const MAX_CATCHUP = 60; // guest ticks per frame while catching up
 export class Session {
   world: World | null = null;
   mode: Mode = 'offline';
-  net: Net | null = null;
+  net: PeerNet | null = null;
   myId = 0;
   myName = 'Player';
   roomCode = '';
@@ -51,7 +51,7 @@ export class Session {
     this.world = createWorld(seed, parkName);
   }
 
-  attachNet(net: Net): void {
+  attachNet(net: PeerNet): void {
     this.net = net;
     net.on((msg) => {
       switch (msg.t) {

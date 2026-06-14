@@ -7,6 +7,8 @@ import { applyTrackStart, applyTrackAdd, applyTrackBack, applyTrackCancel, apply
 import { applyTemplate } from './templates.js';
 import { applyResearchFunding } from './research.js';
 import { applyLoanChange, applyMarketing, applySweep } from './economy.js';
+import { applyMovePeep } from './peeps.js';
+import { applyHireStaff, applyFireStaff } from './staff.js';
 import { rideDef } from './catalog.js';
 
 // Execute one player command against the world. Every mutation of the sim by a
@@ -48,5 +50,8 @@ export function applyCommand(w: World, cmd: Command): boolean {
     case 'marketing': return applyMarketing(w);
     case 'loan': return applyLoanChange(w, cmd.d);
     case 'sweep': return applySweep(w, cmd.x, cmd.y);
+    case 'movePeep': return applyMovePeep(w, cmd.peepId, cmd.x, cmd.y);
+    case 'hireStaff': return applyHireStaff(w, cmd.kind, cmd.x, cmd.y);
+    case 'fireStaff': return applyFireStaff(w, cmd.staffId);
   }
 }

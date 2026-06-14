@@ -167,6 +167,48 @@ function shadow(c: Ctx2, p: P, r: number): void {
   c.restore();
 }
 
+// ---------------------------------------------------------------- pre-render dither
+
+// 4×4 Bayer ordered-dither threshold matrix, normalized to (0,1).
+const BAYER4 = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5],
+].map((r) => r.map((v) => (v + 0.5) / 16));
+
+// Quantize one channel to `levels` steps, dithered against the Bayer threshold.
+// This trades smooth canvas gradients for the chunky, dithered shade-bands of
+// pre-rendered isometric sprites (RCT / Transport Tycoon look), which reads as
+// 3D volume rather than flat vector fill.
+function ditherChannel(v: number, t: number, levels: number): number {
+  const x = (v / 255) * (levels - 1);
+  const fl = Math.floor(x);
+  const lvl = Math.min(levels - 1, fl + (x - fl > t ? 1 : 0));
+  return Math.round((lvl / (levels - 1)) * 255);
+}
+
+// Apply ordered dithering across a sprite's opaque pixels. Run once at boot,
+// before the outline pass so the dark rim stays crisp.
+function ditherSprite(spr: Spr, levels = 6): Spr {
+  const { cv } = spr;
+  const c = cv.getContext('2d')!;
+  const img = c.getImageData(0, 0, cv.width, cv.height);
+  const d = img.data;
+  for (let y = 0; y < cv.height; y++) {
+    for (let x = 0; x < cv.width; x++) {
+      const i = (y * cv.width + x) * 4;
+      if (d[i + 3] < 8) continue; // skip transparent pixels
+      const t = BAYER4[y & 3][x & 3];
+      d[i] = ditherChannel(d[i], t, levels);
+      d[i + 1] = ditherChannel(d[i + 1], t, levels);
+      d[i + 2] = ditherChannel(d[i + 2], t, levels);
+    }
+  }
+  c.putImageData(img, 0, 0);
+  return spr;
+}
+
 // silhouette outline pass: dark 1px rim around the whole sprite (the RCT /
 // Stardew look that makes objects pop off the terrain)
 function outlineSprite(spr: Spr): Spr {
@@ -747,8 +789,8 @@ export function generateSprites(): SpriteMap {
     }
   });
 
-  // rim every sprite with a dark silhouette outline
-  for (const key of Object.keys(S)) S[key] = outlineSprite(S[key]);
+  // pre-render pass: ordered-dither the shading, then rim with a dark silhouette
+  for (const key of Object.keys(S)) S[key] = outlineSprite(ditherSprite(S[key]));
 
   return S;
 }

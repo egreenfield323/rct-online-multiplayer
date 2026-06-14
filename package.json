@@ -2,6 +2,9 @@
   "name": "rct-online-multiplayer",
   "private": true,
   "version": "0.1.0",
+  "description": "OpenPark — a co-op isometric theme-park tycoon (RCT-Deluxe-style) with peer-to-peer multiplayer.",
+  "author": "Evan Greenfield",
+  "main": "electron/main.js",
   "workspaces": [
     "shared",
     "server",
@@ -12,10 +15,32 @@
     "build": "npm run build -w server && npm run build -w client",
     "start": "node server/dist/index.js",
     "test": "npm test -w shared",
-    "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit"
+    "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit",
+    "electron": "npm run build -w client && electron .",
+    "exportGame": "npm run build -w client && electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.openpark.game",
+    "productName": "OpenPark",
+    "files": [
+      "electron/**/*",
+      "client/dist/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "portable",
+      "artifactName": "OpenPark-${version}-portable.exe"
+    },
+    "portable": {
+      "artifactName": "OpenPark-${version}-portable.exe"
+    }
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
     "playwright": "^1.60.0",
     "typescript": "^5.6.3"
   }

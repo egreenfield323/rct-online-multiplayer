@@ -101,6 +101,27 @@ export interface Ride {
   trackDone?: boolean;
   train?: Train;
   testFail?: string; // last failed test reason
+  // breakdowns (flat rides): broken stops operation until a mechanic repairs it
+  broken?: boolean;
+  breakdownT?: number; // mechanic repair progress (ticks)
+}
+
+export type StaffKind = 'handyman' | 'mechanic' | 'security';
+export type StaffState = 'walking' | 'working';
+
+export interface Staff {
+  id: number;
+  kind: StaffKind;
+  x: number;
+  y: number;
+  tx: number;
+  ty: number;
+  dir: Dir;
+  state: StaffState;
+  plan: number[]; // tile indices to walk
+  targetRide: number; // mechanic: ride being repaired (0 = none)
+  workT: number; // ticks spent working at the current spot
+  repathT: number; // cooldown before recomputing a route
 }
 
 export type PeepState = 'entering' | 'walking' | 'queueing' | 'riding' | 'leaving' | 'gone';
@@ -183,9 +204,11 @@ export interface World {
   pathAdd: Uint8Array; // 0 none, 1 bench, 2 lamp, 3 bin
   scen: Uint8Array; // scenery def index + 1
   litter: Uint8Array;
+  vomit: Uint8Array; // sick on the path; handymen clean it
   rideAt: Int16Array; // ride id + 1 occupying tile (footprint/track/ent/exit)
   rides: Ride[];
   peeps: Peep[];
+  staff: Staff[];
   cash: number;
   loan: number;
   curIncome: number;
@@ -196,6 +219,7 @@ export interface World {
   messages: Message[];
   nextRideId: number;
   nextPeepId: number;
+  nextStaffId: number;
 }
 
 // ---------------------------------------------------------------- commands
@@ -220,7 +244,10 @@ export type Command =
   | { t: 'park'; fee?: number; name?: string }
   | { t: 'marketing' }
   | { t: 'loan'; d: 1 | -1 }
-  | { t: 'sweep'; x: number; y: number };
+  | { t: 'sweep'; x: number; y: number }
+  | { t: 'movePeep'; peepId: number; x: number; y: number }
+  | { t: 'hireStaff'; kind: StaffKind; x: number; y: number }
+  | { t: 'fireStaff'; staffId: number };
 
 // helpers
 export const ti = (size: number, x: number, y: number) => y * size + x;

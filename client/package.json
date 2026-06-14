@@ -8,7 +8,8 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@park/shared": "*"
+    "@park/shared": "*",
+    "peerjs": "^1.5.5"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

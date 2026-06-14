@@ -52,7 +52,7 @@ function bytesToI16(b: Uint8Array): Int16Array {
   return out;
 }
 
-const U8_FIELDS = ['heights', 'water', 'path', 'pathAdd', 'scen', 'litter'] as const;
+const U8_FIELDS = ['heights', 'water', 'path', 'pathAdd', 'scen', 'litter', 'vomit'] as const;
 
 export function serializeWorld(w: World): string {
   const plain: Record<string, unknown> = { ...w };

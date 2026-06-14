@@ -1,11 +1,12 @@
 import {
-  World, Ride, TrackKind, fmtMoney, dateOf, rideDef, RIDE_DEFS, SCENERY_DEFS,
+  World, Ride, TrackKind, StaffKind, fmtMoney, dateOf, rideDef, RIDE_DEFS, SCENERY_DEFS,
   TEMPLATES, templateCost, MAX_LOAN, LOAN_STEP, RESEARCH_GOAL, RESEARCH_COST_MONTH,
-  MARKETING_COST, isClosed,
+  MARKETING_COST, isClosed, STAFF_KINDS, STAFF_HIRE_COST, STAFF_WAGE, staffLabel,
 } from '@park/shared';
 import { Session } from '../session.js';
 import { Tools } from '../tools.js';
 import { exportPark, importPark } from '../save.js';
+import { audio } from '../audio.js';
 
 // ---------------------------------------------------------------- manager
 
@@ -363,6 +364,30 @@ export function openParkWin(ctx: WinCtx): void {
       const w = w0(ctx);
       if (w) ctx.session.issue({ t: 'park', fee: w.park.entranceFee + 50 });
     }));
+    const edgeRow = el('div', 'row');
+    const edgeCb = el('input') as HTMLInputElement;
+    edgeCb.type = 'checkbox';
+    edgeCb.id = 'edgeCb';
+    edgeCb.style.flex = '0';
+    edgeCb.checked = window.__game?.input?.edgeScroll ?? true;
+    edgeCb.onchange = () => { if (window.__game?.input) window.__game.input.edgeScroll = edgeCb.checked; };
+    const edgeLab = el('label', '', 'Edge-of-screen scrolling') as HTMLLabelElement;
+    edgeLab.htmlFor = 'edgeCb';
+    edgeLab.style.cursor = 'pointer';
+    edgeRow.append(edgeCb, edgeLab);
+
+    const soundRow = el('div', 'row');
+    const soundCb = el('input') as HTMLInputElement;
+    soundCb.type = 'checkbox';
+    soundCb.id = 'soundCb';
+    soundCb.style.flex = '0';
+    soundCb.checked = !audio.muted;
+    soundCb.onchange = () => { audio.setMuted(!soundCb.checked); if (soundCb.checked) audio.startMusic(); };
+    const soundLab = el('label', '', '🔊 Music & sound effects') as HTMLLabelElement;
+    soundLab.htmlFor = 'soundCb';
+    soundLab.style.cursor = 'pointer';
+    soundRow.append(soundCb, soundLab);
+
     const row2 = el('div', 'row');
     row2.appendChild(btn('💾 Export save', () => {
       const w = w0(ctx);
@@ -381,7 +406,8 @@ export function openParkWin(ctx: WinCtx): void {
         ctx.toast(String((e as Error).message ?? e));
       }
     }));
-    body.append(info, row, el('div', 'sect', 'Save file (host keeps the park — nothing is stored online):'), row2);
+    body.append(info, row, el('div', 'sect', 'View & sound:'), edgeRow, soundRow,
+      el('div', 'sect', 'Save file (host keeps the park — nothing is stored online):'), row2);
     return () => {
       const w = w0(ctx);
       if (!w) return;
@@ -392,22 +418,141 @@ export function openParkWin(ctx: WinCtx): void {
   });
 }
 
+function needBar(label: string, value: number, good: boolean): HTMLElement {
+  // value 0..255. `good` stats (happiness/energy) are bad when low; need stats
+  // (hunger/thirst/toilet/nausea) are bad when high.
+  const pct = Math.round((value / 255) * 100);
+  const bad = good ? value < 90 : value > 170;
+  const warn = good ? value < 150 : value > 110;
+  const col = bad ? '#d24b3a' : warn ? '#d99a2b' : '#5dab3c';
+  const row = el('div', 'peep-need');
+  row.appendChild(el('span', 'peep-need-label', label));
+  const track = el('div', 'peep-bar');
+  const fill = el('div', 'peep-bar-fill');
+  fill.style.width = `${pct}%`;
+  fill.style.background = col;
+  track.appendChild(fill);
+  row.appendChild(track);
+  return row;
+}
+
+function peepDoing(w: World, p: { state: string; goal: string; rideId: number }): string {
+  if (p.state === 'entering') return 'Arriving at the park';
+  if (p.state === 'leaving') return 'Heading for the exit 😞';
+  if (p.state === 'queueing') {
+    const r = w.rides.find((x) => x.id === p.rideId);
+    return `Queueing for ${r?.name ?? 'a ride'}`;
+  }
+  switch (p.goal) {
+    case 'ride': return 'Looking for a ride to go on';
+    case 'food': return 'Hunting for something to eat';
+    case 'drink': return 'Looking for a drink';
+    case 'toilet': return 'Searching for a toilet 🚽';
+    case 'exit': return 'Heading for the exit';
+    default: return 'Wandering around the park';
+  }
+}
+
+export function openPeepWin(ctx: WinCtx, peepId: number): void {
+  const id = `peep${peepId}`;
+  openWin(id, 'Guest', (body) => {
+    const title = el('div', 'sect', '');
+    const doing = el('div', 'kv');
+    const thought = el('div', 'peep-thought');
+    const wallet = el('div', 'kv');
+    const needs = el('div', 'peep-needs');
+    const hint = el('div', 'hint', 'Tip: drag a guest on the map to pick them up and set them down on a path.');
+    body.append(title, doing, thought, wallet, el('div', 'sect', 'How they feel:'), needs, hint);
+    return () => {
+      const w = w0(ctx);
+      const p = w?.peeps.find((q) => q.id === peepId);
+      if (!w || !p) { closeWin(id); return; }
+      title.textContent = `🧍 ${p.name}`;
+      doing.textContent = peepDoing(w, p);
+      thought.textContent = `💭 “${p.thought || '…'}”`;
+      wallet.innerHTML = `Wallet: <b>${fmtMoney(p.cash)}</b>` +
+        (p.holding === 1 ? ' · 🍔 eating' : p.holding === 2 ? ' · 🥤 drinking' : '');
+      needs.innerHTML = '';
+      needs.appendChild(needBar('Happiness', p.happiness, true));
+      needs.appendChild(needBar('Energy', p.energy, true));
+      needs.appendChild(needBar('Hunger', p.hunger, false));
+      needs.appendChild(needBar('Thirst', p.thirst, false));
+      needs.appendChild(needBar('Toilet', p.toilet, false));
+      needs.appendChild(needBar('Nausea', p.nausea, false));
+    };
+  });
+}
+
+const STAFF_BLURB: Record<StaffKind, string> = {
+  handyman: 'Sweeps litter & cleans up sick.',
+  mechanic: 'Repairs rides that break down.',
+  security: 'Calms guests & deters mess nearby.',
+};
+const STAFF_ICON: Record<StaffKind, string> = { handyman: '🧹', mechanic: '🔧', security: '👮' };
+
+export function openStaff(ctx: WinCtx): void {
+  openWin('staff', 'Staff', (body) => {
+    const hire = el('div', 'grid');
+    for (const kind of STAFF_KINDS) {
+      const b = btn(
+        `${STAFF_ICON[kind]} ${staffLabel(kind)}\n${fmtMoney(STAFF_HIRE_COST[kind])} + ${fmtMoney(STAFF_WAGE[kind])}/mo`,
+        () => { ctx.tools.set({ t: 'staff', kind }); ctx.toast(`Click a footpath to place the ${staffLabel(kind).toLowerCase()}.`); },
+        'b card',
+      );
+      b.title = STAFF_BLURB[kind];
+      hire.appendChild(b);
+    }
+    const list = el('div', 'list');
+    body.append(el('div', 'sect', 'Hire (then click a footpath):'), hire, el('div', 'sect', 'On the payroll:'), list);
+    return () => {
+      const w = w0(ctx);
+      if (!w) return;
+      list.innerHTML = '';
+      for (const s of w.staff) {
+        const row = el('div', 'row');
+        row.appendChild(el('span', 'hint', `${STAFF_ICON[s.kind]} ${staffLabel(s.kind)} #${s.id}${s.state === 'working' ? ' — working' : ''}`));
+        row.appendChild(btn('Fire', () => ctx.session.issue({ t: 'fireStaff', staffId: s.id })));
+        list.appendChild(row);
+      }
+      if (!w.staff.length) list.appendChild(el('div', 'hint', 'Nobody hired yet.'));
+    };
+  });
+}
+
 export function openMultiplayer(ctx: WinCtx): void {
   openWin('mp', 'Online Players', (body) => {
     const info = el('div', 'kv');
+    const copyRow = el('div', 'row');
+    const copyBtn = btn('📋 Copy invite code', () => {
+      const code = ctx.session.roomCode;
+      if (code) navigator.clipboard?.writeText(code).then(
+        () => ctx.toast(`Copied “${code}” — send it to a friend!`),
+        () => ctx.toast(`Invite code: ${code}`),
+      );
+    }) as HTMLButtonElement;
+    copyRow.appendChild(copyBtn);
     const members = el('div', 'list');
-    const lobbyEl = el('div', 'list');
-    body.append(info, el('div', 'sect', 'In this park:'), members, el('div', 'sect', 'Online lobby (invite them!):'), lobbyEl);
+    body.append(info, copyRow, el('div', 'sect', 'In this park:'), members);
     return () => {
       const s = ctx.session;
-      if (!s.net?.connected) {
-        info.textContent = 'Offline — no relay connection. Set a relay on the title screen to play together.';
+      if (s.mode === 'offline' || !s.net) {
+        info.innerHTML = 'You are playing <b>solo (offline)</b>.<br>' +
+          'To invite friends, return to the title screen, tick <b>🌐 Play online</b>, and start a park. ' +
+          'It’s free peer-to-peer — no server needed.';
+        copyBtn.style.display = 'none';
         members.innerHTML = '';
-        lobbyEl.innerHTML = '';
         return;
       }
+      if (!s.net.connected && !s.roomCode) {
+        info.textContent = s.mode === 'host' ? 'Opening a peer-to-peer room…' : 'Connecting to the host…';
+        copyBtn.style.display = 'none';
+        members.innerHTML = '';
+        return;
+      }
+      copyBtn.style.display = s.roomCode ? '' : 'none';
       info.innerHTML = s.roomCode
-        ? `Invite code: <b class="code">${s.roomCode}</b> — friends can “Join” with this code.`
+        ? `Invite code: <b class="code">${s.roomCode}</b><br>` +
+          '<span class="hint">Friends type this into “Join a friend” on the title screen.</span>'
         : 'Not in an online park.';
       members.innerHTML = '';
       members.appendChild(el('div', 'hint', `⭐ ${s.myName} (you${s.mode === 'host' ? ', host' : ''})`));
@@ -416,15 +561,6 @@ export function openMultiplayer(ctx: WinCtx): void {
         d.style.color = p.color;
         members.appendChild(d);
       }
-      lobbyEl.innerHTML = '';
-      for (const p of s.lobby) {
-        if (p.id === s.myId || p.status !== 'lobby') continue;
-        const row = el('div', 'row');
-        row.appendChild(el('span', 'hint', p.name));
-        if (s.mode === 'host') row.appendChild(btn('Invite', () => s.invite(p.id)));
-        lobbyEl.appendChild(row);
-      }
-      if (!lobbyEl.hasChildNodes()) lobbyEl.appendChild(el('div', 'hint', 'Nobody else online right now.'));
     };
   });
 }

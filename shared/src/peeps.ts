@@ -3,8 +3,40 @@ import { rngNext, rngInt, chance, pick } from './rng.js';
 import { rideDef } from './catalog.js';
 import { findPath, isWalkable } from './path.js';
 import { joinSpot, queueTileFor } from './rides.js';
+import { guardNear } from './staff.js';
 import { PEEP_SPEED_BASE, QUEUE_MAX, MAX_PEEPS } from './constants.js';
 import { addMessage } from './world.js';
+
+// ---------------------------------------------------------------- relocation
+
+// Player "picks up" a guest and sets them down on a path tile (RCT-style).
+// Deterministic: just repositions and clears AI state so the peep re-plans.
+export function applyMovePeep(w: World, peepId: number, x: number, y: number): boolean {
+  if (!inMap(w.size, x, y)) return false;
+  const p = w.peeps.find((q) => q.id === peepId);
+  if (!p || p.state === 'gone' || p.state === 'riding') return false;
+  if (!isWalkable(w, x, y)) return false; // only set down somewhere they can stand
+  // pull them out of any queue first, keeping other queuers' positions sane
+  if (p.state === 'queueing' && p.rideId) {
+    const ride = w.rides.find((r) => r.id === p.rideId);
+    if (ride) {
+      const qi = ride.queue.indexOf(p.id);
+      if (qi >= 0) ride.queue.splice(qi, 1);
+    }
+    for (const q of w.peeps) if (q.state === 'queueing' && q.rideId === p.rideId && q.queuePos > p.queuePos) q.queuePos--;
+  }
+  p.x = x + 0.5;
+  p.y = y + 0.5;
+  p.tx = x;
+  p.ty = y;
+  p.plan = [];
+  p.rideId = 0;
+  p.queuePos = 0;
+  p.state = 'walking';
+  p.goal = 'none';
+  p.thought = 'Wheee! Put me down!';
+  return true;
+}
 
 // ---------------------------------------------------------------- spawning
 
@@ -145,19 +177,26 @@ function tickNeeds(w: World, p: Peep): void {
       p.happiness = Math.min(255, p.happiness + 10);
       p.holding = 0;
       const i = ti(w.size, p.tx, p.ty);
-      if (inMap(w.size, p.tx, p.ty) && w.path[i] !== 0 && w.pathAdd[i] !== 3 && chance(w, 0.55)) {
+      // a guard nearby deters dropping litter (no bin handy)
+      if (inMap(w.size, p.tx, p.ty) && w.path[i] !== 0 && w.pathAdd[i] !== 3 && chance(w, 0.55) && !guardNear(w, p.tx, p.ty)) {
         w.litter[i] = Math.min(255, w.litter[i] + 1);
       }
     }
   }
 
-  // queasy stomach
-  if (p.nausea > 210 && chance(w, 0.05)) {
+  // queasy stomach → throwing up leaves sick on the path
+  if (p.nausea > 200 && chance(w, 0.04)) {
     const i = ti(w.size, p.tx, p.ty);
-    if (inMap(w.size, p.tx, p.ty) && w.path[i] !== 0) w.litter[i] = Math.min(255, w.litter[i] + 2);
-    p.nausea -= 70;
-    p.happiness = Math.max(0, p.happiness - 14);
-    p.thought = 'I feel sick…';
+    if (inMap(w.size, p.tx, p.ty) && w.path[i] !== 0) w.vomit[i] = Math.min(255, w.vomit[i] + 1);
+    p.nausea = Math.max(0, p.nausea - 80);
+    p.happiness = Math.max(0, p.happiness - 16);
+    p.thought = 'Bleurgh — I feel sick…';
+  }
+  // stepping through someone else's sick is grim
+  if (inMap(w.size, p.tx, p.ty) && w.vomit[ti(w.size, p.tx, p.ty)] > 0 && chance(w, 0.12)) {
+    p.happiness = Math.max(0, p.happiness - 5);
+    p.nausea = Math.min(255, p.nausea + 8);
+    p.thought = 'Ugh, who was sick here?!';
   }
 
   // grumble about mess underfoot
@@ -165,6 +204,9 @@ function tickNeeds(w: World, p: Peep): void {
     p.happiness = Math.max(0, p.happiness - 3);
     p.thought = 'This path is disgusting!';
   }
+
+  // a visible security presence makes guests feel a bit safer/happier
+  if (guardNear(w, p.tx, p.ty)) p.happiness = Math.min(255, p.happiness + 1);
 }
 
 // ---------------------------------------------------------------- goal AI

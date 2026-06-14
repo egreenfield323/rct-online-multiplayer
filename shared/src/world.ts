@@ -16,9 +16,11 @@ export function createWorld(seed: number, name = 'Meadowbrook Park'): World {
     pathAdd: new Uint8Array(size * size),
     scen: new Uint8Array(size * size),
     litter: new Uint8Array(size * size),
+    vomit: new Uint8Array(size * size),
     rideAt: new Int16Array(size * size),
     rides: [],
     peeps: [],
+    staff: [],
     cash: START_CASH,
     loan: START_LOAN,
     curIncome: 0,
@@ -42,6 +44,7 @@ export function createWorld(seed: number, name = 'Meadowbrook Park'): World {
     messages: [],
     nextRideId: 1,
     nextPeepId: 1,
+    nextStaffId: 1,
   };
 
   // entrance promenade: path from map edge up into the park

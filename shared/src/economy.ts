@@ -2,7 +2,7 @@ import { World, ti } from './types.js';
 import { rideDef } from './catalog.js';
 import {
   MONTH_TICKS, MAX_LOAN, LOAN_STEP, RESEARCH_COST_MONTH,
-  MARKETING_COST, MARKETING_TICKS,
+  MARKETING_COST, MARKETING_TICKS, STAFF_WAGE,
 } from './constants.js';
 import { addMessage } from './world.js';
 
@@ -55,10 +55,12 @@ export function computeParkRating(w: World): number {
     rideScore += 28 + (ride.excitement > 0 ? Math.floor(ride.excitement / 16) : 0);
   }
   r += Math.min(220, rideScore);
-  // litter drags it down
-  let litter = 0;
+  // litter & sick drag it down (vomit hurts more)
+  let litter = 0, sick = 0;
   for (let i = 0; i < w.litter.length; i++) litter += w.litter[i] > 0 ? 1 : 0;
+  for (let i = 0; i < w.vomit.length; i++) sick += w.vomit[i] > 0 ? 1 : 0;
   r -= Math.min(150, litter * 3);
+  r -= Math.min(120, sick * 8);
   return Math.max(0, Math.min(999, r));
 }
 
@@ -74,6 +76,7 @@ export function tickEconomy(w: World): void {
     if (!ride.open) continue;
     upkeep += rideDef(ride.type).category === 'stall' ? UPKEEP_STALL : UPKEEP_RIDE;
   }
+  for (const s of w.staff) upkeep += STAFF_WAGE[s.kind];
   const interest = Math.floor(w.loan * LOAN_INTEREST);
   const research = RESEARCH_COST_MONTH[w.research.funding];
   const charge = upkeep + interest + research;

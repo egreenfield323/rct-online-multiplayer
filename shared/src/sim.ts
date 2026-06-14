@@ -4,6 +4,7 @@ import { rideDef } from './catalog.js';
 import { tickFlatRide } from './rides.js';
 import { tickCoaster } from './coaster.js';
 import { tickPeeps, tickSpawning } from './peeps.js';
+import { tickStaff } from './staff.js';
 import { tickResearch } from './research.js';
 import { tickEconomy } from './economy.js';
 
@@ -15,6 +16,7 @@ export function stepWorld(w: World, cmds: Command[]): void {
   tickResearch(w);
   tickSpawning(w);
   tickPeeps(w);
+  tickStaff(w);
   for (const ride of w.rides) {
     const def = rideDef(ride.type);
     if (def.category === 'coaster') tickCoaster(w, ride);

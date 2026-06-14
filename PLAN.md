@@ -177,11 +177,14 @@ Ephemeral payloads: `cursor{x,y,tool}` `ghost{kind,...}|null`.
 - [x] README.md with Pages/relay/save instructions
 
 ### M8 — Stretch (future sessions)
-- [ ] staff (handymen sweep litter, mechanics fix breakdowns), ride breakdowns
+- [x] staff (handymen sweep litter+sick, mechanics fix breakdowns, security calms guests),
+      flat-ride breakdowns, guest vomiting
 - [ ] banked turns, vertical loop piece, on-ride photo; more templates
 - [ ] scenario objectives + multiple maps; land ownership
 - [ ] host migration; spectator mode; in-game chat
-- [ ] WebRTC datachannel transport (server = signaling only)
+- [x] WebRTC datachannel transport (free public PeerJS broker = signalling only, no game server)
+- [x] desktop build: portable Windows .exe via Electron (`npm run exportGame`)
+- [x] edge-of-screen camera scrolling; clickable Credits scene; ordered-dither sprite pass
 
 ## Status log (append entries; newest last)
 
@@ -212,3 +215,62 @@ Ephemeral payloads: `cursor{x,y,tool}` `ghost{kind,...}|null`.
   lip, track crossties + dark rail underside + wooden trestle supports, detailed train cars,
   peeps with hair/arms/walk cycle. Verified via zoom-2 Playwright screenshots, iterated on
   tower cabin/twist/stall signs. Tests/build green.
+- 2026-06-14 (session 3, user requests): Four asks delivered.
+  (1) **Edge-of-screen camera scroll** (input.ts): cursor near a viewport edge pans like the
+  arrow keys, ramped over a 48px margin, suppressed at the menu / over windows / off-window;
+  toggle in the Park window (`window.__game.input.edgeScroll`).
+  (2) **Credits scene** (ui.ts `showCredits` + style.css): clickable from the title menu,
+  documents inspirations (RCT Deluxe, Stardew Valley — no assets used), the all-procedural
+  art pipeline, and the tech (TS/Vite/Canvas2D, PeerJS, Electron).
+  (3) **Art "less drawn" pass**: decided WITH user to upgrade the procedural renderer rather
+  than chase a (nonexistent) cohesive free pre-rendered pack. Added a boot-time **Bayer 4×4
+  ordered-dither** colour-quantisation pass over every sprite (sprites.ts `ditherSprite`)
+  before the silhouette outline — smooth canvas gradients become chunky dithered shade-bands
+  that read as pre-rendered 3D. Verified via zoom-2 Playwright screenshot.
+  (4) **Serverless P2P** (decided: free public signalling only): new `client/src/peernet.ts`
+  — a drop-in for the ws relay that runs WebRTC over the **free public PeerJS broker**,
+  star topology with the host as hub (host id 1; host relays guest broadcasts/toPlayer and
+  ships snapshots exactly as the server did). Session/lockstep unchanged; relay box replaced
+  by a "🌐 Play online" toggle; 👥 window now shows a copy-able invite code; lobby invites
+  dropped (no global directory without a server). Verified end-to-end headless: host opened
+  room, guest joined over the real broker, identical lockstep ticks, guest command reached
+  the host sim.
+  (5) **Desktop .exe** (`electron/main.js` + root `build` config): `npm run exportGame`
+  builds the client then electron-builder produces a self-contained
+  `release/OpenPark-<ver>-portable.exe` (~71 MB) — shareable, runs with no setup, online
+  co-op works because PeerJS needs no server. `npm run electron` runs the shell locally.
+  Added `peerjs` (client dep) + `electron`/`electron-builder` (root devDeps). 26 tests +
+  client typecheck/build green; exe packaged successfully.
+- 2026-06-14 (session 3, gameplay fixes): (a) edge-scroll now suppressed over the toolbar /
+  status bar / ticker / toasts (they sit inside the 48px margin). (b) Placing a building
+  (ride/stall/template) auto-returns to the pointer tool; invalid build clicks now surface a
+  helpful toast (cash / "needs flat clear ground + entrance room, R rotates" / template
+  reason) instead of failing silently — the "can't place anything" complaint was missing
+  feedback + tool persistence, not broken placement. Scenery still repeats but toasts on bad
+  tiles. (c) **Guest interaction**: pointer-click a peep opens a live **Guest** inspector
+  (name, what they're doing, 💭 thought, wallet, happiness/energy/hunger/thirst/toilet/nausea
+  bars); drag a peep to pick them up (carried-peep render + green/red drop-tile highlight)
+  and set them down on a path. New deterministic `movePeep` command (`applyMovePeep` in
+  peeps.ts, wired through commands.ts) — pulls them from any queue, repositions, clears AI so
+  they re-plan. `Hover` gained precise float `wx/wy`; `tools.peepAt/dropPeep/carriedPeep`,
+  `onOpenPeep`, `toast`. Verified headless: peepAt hit/miss, inspector thought+wallet,
+  on-path move applies, off-path drop rejected with toast. 26 tests + typecheck + build green.
+- 2026-06-14 (session 3, staff/sick/breakdowns/audio): (a) ALL object placement (scenery too,
+  not just rides) now returns to the pointer tool after a successful place. (b) **Vomiting**:
+  new `w.vomit` Uint8Array (serialized) — nauseous guests throw up on the path (was just
+  litter); sick drags park rating harder and makes passers-by queasy/unhappy. (c) **Flat-ride
+  breakdowns**: rides roll `BREAKDOWN_CHANCE` at each dispatch → `ride.broken` (flashing "!"
+  badge), queue stalls, fed-up guests bail; stays broken until a mechanic repairs it
+  (`REPAIR_TICKS`). Coasters exempt for now. (d) **Staff** (`shared/src/staff.ts`): hireable
+  handyman / mechanic / security — new `Staff[]` + `nextStaffId` on World, `hireStaff`/
+  `fireStaff` commands, deterministic AI (handyman pathfinds to litter/vomit & cleans;
+  mechanic pathfinds beside broken rides & repairs; security patrols, `guardNear` calms
+  guests + deters littering in `peeps.ts`). Monthly wages in `tickEconomy`. New 🧑‍🔧 toolbar
+  button → Staff window (hire→click a footpath; payroll + Fire). Code-drawn staff sprites
+  (uniform colours + tool) and green vomit splats; vomit folded into the ground-cache hash.
+  (e) **Audio** (`client/src/audio.ts`): synthesized WebAudio — a looping jaunty theme + SFX
+  (button click, place/cash/hire confirms, fail buzz). Unlocked on first gesture, starts when
+  a park begins; mute toggle in Park window (persisted). Hooked in tools (place ok/fail) +
+  main (button clicks). Determinism script now hires all 3 staff → locked into the lockstep
+  hash. 26 tests + full typecheck + client build green; staff/clean/repair/vomit verified
+  headless + screenshot. (NB: re-run `npm run exportGame` to fold these into the .exe.)

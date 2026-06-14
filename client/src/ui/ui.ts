@@ -1,13 +1,13 @@
 import { World, fmtMoney, dateOf, createWorld } from '@park/shared';
 import { Session } from '../session.js';
 import { Tools } from '../tools.js';
-import { Net, resolveRelayUrl, saveRelayUrl } from '../net.js';
+import { PeerNet } from '../peernet.js';
 import { loadAutosave, importPark } from '../save.js';
 import {
   WinCtx, initWindows, updateWindows, el, btn,
   openBuildRides, openBuildStalls, openBuildCoasters, openBuildScenery,
   openTrackBuilder, openRideWin, openRideList, openFinances, openResearch,
-  openParkWin, openMultiplayer, closeWin,
+  openParkWin, openMultiplayer, openPeepWin, openStaff, closeWin,
 } from './windows.js';
 
 export class UI {
@@ -32,6 +32,8 @@ export class UI {
     this.menu = document.querySelector('#menu')!;
     this.buildToolbar(uiRoot.querySelector('#toolbar')!);
     tools.onOpenRide = (id) => openRideWin(this.ctx, id);
+    tools.onOpenPeep = (id) => openPeepWin(this.ctx, id);
+    tools.toast = (t) => this.toast(t);
     tools.onTrackStarted = () => openTrackBuilder(this.ctx);
     session.onInvite = (from, code) => this.invitePopup(from, code);
     session.onHostLeft = () => this.toast('The host left — the park is now yours to keep playing locally.');
@@ -67,6 +69,7 @@ export class UI {
     tool('💥', 'Demolish ride', () => this.tools.set({ t: 'demolish' }));
     bar.appendChild(el('span', 'tb-sep'));
     tool('📋', 'Ride list', () => openRideList(this.ctx));
+    tool('🧑‍🔧', 'Staff', () => openStaff(this.ctx));
     tool('💰', 'Finances', () => openFinances(this.ctx));
     tool('🔬', 'Research', () => openResearch(this.ctx));
     tool('🏞', 'Park & save', () => openParkWin(this.ctx));
@@ -141,17 +144,24 @@ export class UI {
     nameRow.appendChild(nameIn);
     card.appendChild(nameRow);
 
-    const relayRow = el('div', 'row');
-    relayRow.appendChild(el('label', '', 'Relay server:'));
-    const relayIn = el('input') as HTMLInputElement;
-    relayIn.placeholder = 'wss://your-relay.example.com (blank = offline)';
-    relayIn.value = localStorage.getItem('openpark-relay') ?? (resolveRelayUrl() ?? '');
-    relayRow.appendChild(relayIn);
-    card.appendChild(relayRow);
+    const onlineRow = el('div', 'row');
+    const onlineCb = el('input') as HTMLInputElement;
+    onlineCb.type = 'checkbox';
+    onlineCb.id = 'onlineCb';
+    onlineCb.checked = localStorage.getItem('openpark-online') === '1';
+    onlineCb.style.flex = '0';
+    onlineCb.onchange = () => localStorage.setItem('openpark-online', onlineCb.checked ? '1' : '0');
+    const onlineLabel = el('label', '', '🌐 Play online — let friends join') as HTMLLabelElement;
+    onlineLabel.htmlFor = 'onlineCb';
+    onlineLabel.style.minWidth = '0';
+    onlineLabel.style.cursor = 'pointer';
+    onlineRow.appendChild(onlineCb);
+    onlineRow.appendChild(onlineLabel);
+    card.appendChild(onlineRow);
     card.appendChild(el('p', 'hint',
-      'On GitHub Pages there is no built-in server: run `npm start` somewhere reachable ' +
-      '(or a tunnel) and paste its wss:// address — or leave blank to play solo offline. ' +
-      'Saves stay on your machine either way.'));
+      'Online play is free peer-to-peer (WebRTC) — no server, no cloud saves. ' +
+      'Tick the box, start a park, then open 👥 to get a 6-letter code your friends type in below. ' +
+      'The park lives on the host’s machine; everyone else mirrors it live.'));
 
     const status = el('p', 'hint', '');
     card.appendChild(status);
@@ -162,30 +172,12 @@ export class UI {
       return n;
     };
 
-    const connect = async (): Promise<boolean> => {
-      const url = relayIn.value.trim();
-      saveRelayUrl(url === (resolveRelayUrl() ?? '') ? '' : url);
-      const target = url || resolveRelayUrl();
-      if (!target) return false;
-      if (this.session.net?.connected) return true;
-      status.textContent = 'Connecting to relay…';
-      const net = new Net();
-      try {
-        this.session.attachNet(net);
-        await net.connect(target, getName());
-        this.session.net = net;
-        status.textContent = 'Connected!';
-        return true;
-      } catch {
-        status.textContent = 'Relay unreachable — playing offline.';
-        this.session.net = null;
-        return false;
-      }
-    };
-
     const begin = (w: World, online: boolean) => {
-      if (online && this.session.net?.connected) this.session.hostPark(w);
-      else {
+      if (online) {
+        const net = new PeerNet(getName());
+        this.session.attachNet(net);
+        this.session.hostPark(w); // PeerNet opens a room + invite code asynchronously
+      } else {
         this.session.mode = 'offline';
         this.session.world = w;
       }
@@ -194,23 +186,20 @@ export class UI {
     };
 
     const rowB = el('div', 'row menu-actions');
-    rowB.appendChild(btn('🌱 New park', async () => {
-      const online = await connect();
-      begin(createWorld((Math.random() * 0xffffffff) >>> 0), online);
+    rowB.appendChild(btn('🌱 New park', () => {
+      begin(createWorld((Math.random() * 0xffffffff) >>> 0), onlineCb.checked);
     }, 'b big'));
 
     const auto = loadAutosave();
     if (auto) {
-      rowB.appendChild(btn(`⏪ Continue “${auto.park.name}”`, async () => {
-        const online = await connect();
-        begin(auto, online);
+      rowB.appendChild(btn(`⏪ Continue “${auto.park.name}”`, () => {
+        begin(auto, onlineCb.checked);
       }, 'b big'));
     }
     rowB.appendChild(btn('📂 Load .park file', async () => {
       try {
         const w = await importPark();
-        const online = await connect();
-        begin(w, online);
+        begin(w, onlineCb.checked);
       } catch (e) {
         status.textContent = String((e as Error).message ?? e);
       }
@@ -223,22 +212,93 @@ export class UI {
     codeIn.maxLength = 6;
     codeIn.style.textTransform = 'uppercase';
     joinRow.appendChild(codeIn);
-    joinRow.appendChild(btn('🤝 Join a friend', async () => {
-      const ok = await connect();
-      if (!ok) {
-        status.textContent = 'Need a relay connection to join someone.';
-        return;
-      }
+    joinRow.appendChild(btn('🤝 Join a friend', () => {
       if (codeIn.value.trim().length < 6) {
         status.textContent = 'Enter the 6-letter invite code.';
         return;
       }
+      status.textContent = 'Connecting to the host…';
+      const net = new PeerNet(getName());
+      this.session.attachNet(net);
       this.session.joinPark(codeIn.value.trim().toUpperCase());
       this.hideMenu();
       this.onStart();
     }, 'b big'));
     card.appendChild(joinRow);
 
+    const footer = el('div', 'row menu-footer');
+    footer.appendChild(btn('🏆 Credits', () => this.showCredits(), 'b link'));
+    card.appendChild(footer);
+
     this.menu.appendChild(card);
+  }
+
+  // ------------------------------------------------------------ credits scene
+
+  showCredits(): void {
+    const back = el('div', 'credits-scene');
+    const card = el('div', 'credits-card');
+
+    card.appendChild(el('h1', '', '🏆 Credits & Acknowledgements'));
+    card.appendChild(el('p', 'credits-lead',
+      'OpenPark is a co-op theme-park tycoon built from scratch as a love letter to the ' +
+      'isometric park-builders we grew up with. Everything you see is original work — no ' +
+      'art, code, or data is taken from any commercial game. Here is where it all comes from.'));
+
+    const section = (title: string, rows: [string, string][]) => {
+      card.appendChild(el('h2', '', title));
+      const list = el('div', 'credits-list');
+      for (const [k, v] of rows) {
+        const r = el('div', 'credits-row');
+        r.appendChild(el('div', 'credits-k', k));
+        const val = el('div', 'credits-v');
+        val.innerHTML = v;
+        r.appendChild(val);
+        list.appendChild(r);
+      }
+      card.appendChild(list);
+    };
+
+    section('Design inspiration', [
+      ['RollerCoaster Tycoon Deluxe', 'Chris Sawyer — the 2:1 isometric grid, beveled-tan window chrome, ' +
+        'top icon toolbar, bottom cash/guests/rating/date status bar, research unlocks, and the whole ' +
+        'flat-ride + buildable-coaster tycoon loop are modelled on the original. <i>No RCT assets are used.</i>'],
+      ['Stardew Valley', 'ConcernedApe (Eric Barone) — the warm, sunlit palette, soft drop-shadows, ' +
+        'dappled-light grass and cozy hand-detailed objects take their cue from Stardew’s pixel art.'],
+    ]);
+
+    section('Art &amp; graphics', [
+      ['All sprites &amp; terrain', 'Procedurally drawn in code at boot — every tree, stall, flat ride, ' +
+        'coaster car, peep and the entrance gate is generated by ' +
+        '<code>client/src/render/sprites.ts</code> and <code>renderer.ts</code> using a local isometric ' +
+        'projector with directional lighting.'],
+      ['Pre-rendered look', 'Faces are gradient-shaded then <b>ordered-dithered</b> (Bayer 4×4 colour ' +
+        'quantisation) and rimmed with a dark silhouette + contact ambient-occlusion shadow, to read as ' +
+        'pre-rendered 3D rather than flat vector art.'],
+      ['Palette', 'Hand-tuned, RCT-inspired: bright checkered grass, tan/blue paths, pastel ride colours. ' +
+        'Original — CC0, no external asset packs.'],
+    ]);
+
+    section('Technology', [
+      ['Engine', 'TypeScript + Vite, rendered on a single HTML5 <code>&lt;canvas&gt;</code> (Canvas2D), ' +
+        'deterministic fixed-step simulation shared between all players.'],
+      ['Multiplayer', '<b>PeerJS</b> over WebRTC — peer-to-peer data channels using the free public PeerJS ' +
+        'broker for signalling only. No game server, no cloud saves: the park lives with the host.'],
+      ['Desktop build', '<b>Electron</b> + electron-builder package the same game into a portable Windows ' +
+        '<code>.exe</code> (<code>npm run exportGame</code>) for native performance.'],
+      ['Fonts &amp; icons', 'System UI fonts; emoji supplied by your operating system.'],
+    ]);
+
+    section('Made by', [
+      ['Evan Greenfield', 'Design, code &amp; pixel-pushing.'],
+      ['Claude (Anthropic)', 'AI pair-programmer.'],
+    ]);
+
+    const close = btn('← Back to menu', () => back.remove(), 'b big');
+    card.appendChild(el('div', 'row credits-actions')).appendChild(close);
+
+    back.appendChild(card);
+    back.addEventListener('click', (e) => { if (e.target === back) back.remove(); });
+    document.body.appendChild(back);
   }
 }

@@ -1,5 +1,5 @@
 import {
-  World, Ride, TrackPiece, Peep, ti, DX, DY,
+  World, Ride, TrackPiece, Peep, Staff, ti, DX, DY,
   vh, corners, tileMinH, rideDef, SCENERY_DEFS,
   PIECES, pieceExit, pieceAt, trackLengths, pathConnections,
 } from '@park/shared';
@@ -245,7 +245,7 @@ function groundVersion(w: World, frame: number): number {
     h = Math.imul(h, 0x01000193);
   };
   for (let i = 0; i < w.heights.length; i++) mix(w.heights[i]);
-  for (let i = 0; i < w.path.length; i++) mix(w.path[i] + (w.water[i] << 3) + (w.litter[i] << 8));
+  for (let i = 0; i < w.path.length; i++) mix(w.path[i] + (w.water[i] << 3) + (w.litter[i] << 8) + (w.vomit[i] << 16));
   lastVer = h >>> 0;
   return lastVer;
 }
@@ -397,6 +397,18 @@ function drawGroundTiles(c: CanvasRenderingContext2D, w: World, x0: number, x1: 
           const q = tilePoint(x, y, cs, 0.2 + ((k * 37) % 55) / 100, 0.2 + ((k * 53) % 55) / 100);
           c.fillStyle = k % 2 ? '#6b5e42' : '#9b8d6b';
           c.fillRect(q.sx - 1, q.sy - 1, 3, 2);
+        }
+      }
+
+      // sick (vomit) — greenish splats on the path
+      const vom = w.vomit[i];
+      if (vom > 0 && pk !== 0) {
+        for (let k = 0; k < Math.min(3, vom + 1); k++) {
+          const q = tilePoint(x, y, cs, 0.3 + ((k * 29) % 40) / 100, 0.3 + ((k * 61) % 40) / 100);
+          c.fillStyle = k % 2 ? '#8f9c34' : '#aeb845';
+          c.beginPath(); c.ellipse(q.sx, q.sy, 3, 1.6, 0, 0, 7); c.fill();
+          c.fillStyle = 'rgba(120,140,40,0.5)';
+          c.beginPath(); c.ellipse(q.sx + 2, q.sy + 1, 1.4, 0.8, 0, 0, 7); c.fill();
         }
       }
     }
@@ -593,8 +605,21 @@ export function render(
           c.stroke();
           if (sprite) {
             const q = proj(cx, cy, z);
-            const bob = ride.phase === 'running' ? Math.sin(frame * 0.3) * 1.5 : 0;
+            const bob = ride.phase === 'running' && !ride.broken ? Math.sin(frame * 0.3) * 1.5 : 0;
             blit(c, sprite, q.sx, q.sy + bob);
+          }
+          if (ride.broken && ((frame >> 3) & 1)) {
+            const top = proj(cx, cy, z);
+            const yy = top.sy - n * 16 - 22;
+            c.fillStyle = '#ffd400';
+            c.strokeStyle = '#332600';
+            c.lineWidth = 1.5;
+            c.beginPath(); c.arc(top.sx, yy, 8, 0, 7); c.fill(); c.stroke();
+            c.fillStyle = '#332600';
+            c.font = 'bold 13px sans-serif';
+            c.textAlign = 'center';
+            c.textBaseline = 'middle';
+            c.fillText('!', top.sx, yy + 0.5);
           }
         },
       });
@@ -685,8 +710,71 @@ export function render(
     });
   }
 
+  // staff
+  for (const s of w.staff) {
+    if (s.x < x0 - 1 || s.x > x1 + 2 || s.y < y0 - 1 || s.y > y1 + 2) continue;
+    drawables.push({
+      key: s.x + s.y + 0.36,
+      draw: () => drawStaff(c, w, s, frame),
+    });
+  }
+
   drawables.sort((a, b) => a.key - b.key);
   for (const d of drawables) d.draw();
+}
+
+// staff uniforms: [body, trim/hat]
+const STAFF_COLORS: Record<string, [string, string]> = {
+  handyman: ['#e08a2c', '#7a4a14'], // orange hi-vis
+  mechanic: ['#2f6fb0', '#1c3d63'], // blue overalls
+  security: ['#2b3550', '#11151f'], // navy + dark cap
+};
+
+function drawStaff(c: CanvasRenderingContext2D, w: World, s: Staff, frame: number): void {
+  const z = vh(w, Math.floor(s.x), Math.floor(s.y));
+  const q = proj(s.x, s.y, z);
+  const step = Math.sin(frame * 0.35 + s.id * 1.7);
+  const moving = s.state !== 'working';
+  const bob = moving ? Math.abs(step) * 0.7 : 0;
+  const [body, trim] = STAFF_COLORS[s.kind] ?? STAFF_COLORS.handyman;
+  c.fillStyle = 'rgba(0,0,0,0.28)';
+  c.beginPath(); c.ellipse(q.sx, q.sy, 3.6, 1.7, 0, 0, 7); c.fill();
+  // silhouette pop
+  c.fillStyle = 'rgba(24,18,12,0.7)';
+  c.fillRect(q.sx - 3.4, q.sy - 15 - bob, 7.2, 15.3);
+  // legs
+  c.fillStyle = trim;
+  c.fillRect(q.sx - 2 + (moving ? step : 0), q.sy - 4, 2, 4);
+  c.fillRect(q.sx + 0.5 - (moving ? step : 0), q.sy - 4, 2, 4);
+  // body (uniform) + hi-vis stripe
+  c.fillStyle = body;
+  c.fillRect(q.sx - 2.7, q.sy - 9.5 - bob, 5.7, 6);
+  c.fillStyle = 'rgba(255,255,255,0.5)';
+  c.fillRect(q.sx - 2.7, q.sy - 7.5 - bob, 5.7, 1.2);
+  // arms
+  c.fillStyle = body;
+  c.fillRect(q.sx - 3.7, q.sy - 9 - bob, 1.5, 4.5);
+  c.fillRect(q.sx + 2.7, q.sy - 9 - bob, 1.5, 4.5);
+  // head + cap
+  c.fillStyle = '#ffd9b3';
+  c.fillRect(q.sx - 2, q.sy - 13.5 - bob, 4.5, 4.5);
+  c.fillStyle = trim;
+  c.fillRect(q.sx - 2.3, q.sy - 14.5 - bob, 5, 2);
+  // tool of the trade
+  if (s.kind === 'handyman') { // broom
+    c.strokeStyle = '#8a5a22'; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(q.sx + 4, q.sy - 12 - bob); c.lineTo(q.sx + 5.5, q.sy - 1); c.stroke();
+    c.fillStyle = '#d9c089'; c.fillRect(q.sx + 4.5, q.sy - 2, 2.5, 2.5);
+  } else if (s.kind === 'mechanic') { // wrench glint
+    c.fillStyle = '#cfd6dc'; c.fillRect(q.sx + 3.6, q.sy - 9 - bob, 1.6, 4);
+  } else { // security badge
+    c.fillStyle = '#ffd400'; c.fillRect(q.sx - 1, q.sy - 8.5 - bob, 1.6, 1.6);
+  }
+  // working sparkle/sweat
+  if (s.state === 'working' && ((frame >> 2) & 1)) {
+    c.fillStyle = s.kind === 'mechanic' ? '#fff2a0' : '#cfe8ff';
+    c.fillRect(q.sx + 4, q.sy - 14 - bob, 1.5, 1.5);
+  }
 }
 
 const HAIR = ['#4a2c12', '#1a1a1a', '#c8973a', '#6e3a1a', '#888888'];

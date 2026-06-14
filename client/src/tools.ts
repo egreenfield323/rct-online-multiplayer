@@ -1,11 +1,13 @@
 import {
-  World, Dir, TrackKind, TrackPiece, ti, inMap, fmtMoney,
+  World, Peep, Dir, TrackKind, TrackPiece, StaffKind, ti, inMap, fmtMoney,
   canPlacePath, sceneryDef, canPlaceRide, rideDef, entranceSpots,
   buildableFlat, tileMaxH, PIECES, trackEnd, pieceError, pieceCells, isClosed,
-  templateDef, templatePieces, templateError, templateCost,
+  templateDef, templatePieces, templateError, templateCost, isWalkable,
+  STAFF_HIRE_COST, staffLabel,
 } from '@park/shared';
 import { Session } from './session.js';
 import { Ghost } from './state.js';
+import { audio } from './audio.js';
 
 export type Tool =
   | { t: 'pointer' }
@@ -16,6 +18,7 @@ export type Tool =
   | { t: 'scenery'; type: string }
   | { t: 'unscenery' }
   | { t: 'ride'; type: string }
+  | { t: 'staff'; kind: StaffKind }
   | { t: 'template'; tpl: string }
   | { t: 'trackStart'; type: string }
   | { t: 'track' } // builder active; pieces added via the palette window
@@ -27,6 +30,8 @@ export interface Hover {
   y: number;
   vx: number;
   vy: number;
+  wx: number; // precise cursor world coords (tile units, float)
+  wy: number;
 }
 
 export class Tools {
@@ -34,10 +39,35 @@ export class Tools {
   rot: Dir = 0;
   nextPiece: TrackKind = 'flat';
   hover: Hover | null = null;
+  carriedPeep: number | null = null; // guest currently being dragged
   onOpenRide: ((rideId: number) => void) | null = null;
+  onOpenPeep: ((peepId: number) => void) | null = null;
   onTrackStarted: (() => void) | null = null;
+  toast: ((msg: string) => void) | null = null;
 
   constructor(private session: Session) {}
+
+  // nearest visible guest within click radius of the precise cursor, or null
+  peepAt(w: World, wx: number, wy: number): number | null {
+    let best = -1;
+    let bestD = 0.55 * 0.55; // ~half a tile
+    for (const p of w.peeps) {
+      if (p.state === 'riding' || p.state === 'gone') continue;
+      const dx = p.x - wx, dy = p.y - wy;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = p.id; }
+    }
+    return best >= 0 ? best : null;
+  }
+
+  // issue a "pick up & set down" for a dragged guest; toasts if the drop is bad
+  dropPeep(w: World, peepId: number, x: number, y: number): void {
+    if (!inMap(w.size, x, y) || !isWalkable(w, x, y)) {
+      this.toast?.('Guests can only be set down on a path.');
+      return;
+    }
+    this.session.issue({ t: 'movePeep', peepId, x, y });
+  }
 
   set(tool: Tool): void {
     this.tool = tool;
@@ -108,6 +138,10 @@ export class Tools {
         const ok = canPlaceRide(w, t.type, h!.x, h!.y, this.rot);
         return { k: 'tiles', tiles, ok, label: `${def.name} ${fmtMoney(def.cost)} (R rotates)` };
       }
+      case 'staff': {
+        const ok = inMap(w.size, h!.x, h!.y) && w.path[ti(w.size, h!.x, h!.y)] === 1;
+        return { k: 'tiles', tiles: [[h!.x, h!.y]], ok, label: `${staffLabel(t.kind)} ${fmtMoney(STAFF_HIRE_COST[t.kind])}` };
+      }
       case 'template': {
         const tpl = templateDef(t.tpl);
         const err = templateError(w, t.tpl, h!.x, h!.y);
@@ -177,18 +211,64 @@ export class Tools {
       case 'unpath':
         s.issue({ t: 'unpath', x: h.x, y: h.y });
         return true;
-      case 'scenery':
+      case 'scenery': {
+        const def = sceneryDef(t.type);
+        const onPath = def.kind === 'bench' || def.kind === 'lamp' || def.kind === 'bin';
+        const i = ti(w.size, h.x, h.y);
+        const ok = onPath
+          ? inMap(w.size, h.x, h.y) && w.path[i] === 1 && w.pathAdd[i] === 0
+          : buildableFlat(w, h.x, h.y);
+        if (!ok) {
+          audio.sfx('fail');
+          this.toast?.(onPath ? `${def.name} must go on an empty footpath.` : `Can't place ${def.name} here — needs flat, clear ground.`);
+          return true;
+        }
         s.issue({ t: 'scenery', x: h.x, y: h.y, type: t.type });
+        audio.sfx('place');
+        this.set({ t: 'pointer' }); // back to Select after placing
         return true;
+      }
       case 'unscenery':
         s.issue({ t: 'unscenery', x: h.x, y: h.y });
         return true;
-      case 'ride':
+      case 'ride': {
+        if (!canPlaceRide(w, t.type, h.x, h.y, this.rot)) {
+          const def = rideDef(t.type);
+          audio.sfx('fail');
+          this.toast?.(w.cash < def.cost
+            ? `Not enough cash for ${def.name} (${fmtMoney(def.cost)}).`
+            : `Can't build ${def.name} here — needs flat, clear ground with room for the entrance & exit (press R to rotate).`);
+          return true;
+        }
         s.issue({ t: 'ride', type: t.type, x: h.x, y: h.y, rot: this.rot });
+        audio.sfx('cash');
+        this.set({ t: 'pointer' }); // back to Select after placing a building
         return true;
-      case 'template':
+      }
+      case 'template': {
+        const err = templateError(w, t.tpl, h.x, h.y);
+        if (err) { audio.sfx('fail'); this.toast?.(err); return true; }
         s.issue({ t: 'template', tpl: t.tpl, x: h.x, y: h.y });
+        audio.sfx('cash');
+        this.set({ t: 'pointer' });
         return true;
+      }
+      case 'staff': {
+        if (!(inMap(w.size, h.x, h.y) && w.path[ti(w.size, h.x, h.y)] === 1)) {
+          audio.sfx('fail');
+          this.toast?.('Hire staff onto a footpath.');
+          return true;
+        }
+        if (w.cash < STAFF_HIRE_COST[t.kind]) {
+          audio.sfx('fail');
+          this.toast?.(`Not enough cash to hire a ${staffLabel(t.kind).toLowerCase()}.`);
+          return true;
+        }
+        s.issue({ t: 'hireStaff', kind: t.kind, x: h.x, y: h.y });
+        audio.sfx('hire');
+        this.set({ t: 'pointer' });
+        return true;
+      }
       case 'trackStart':
         s.issue({ t: 'trackStart', type: t.type, x: h.x, y: h.y, rot: this.rot });
         this.tool = { t: 'track' };

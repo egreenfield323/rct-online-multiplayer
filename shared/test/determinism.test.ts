@@ -22,6 +22,10 @@ function script(): Map<number, Command[]> {
   at(100, { t: 'park', fee: 5_00 });
   at(110, { t: 'marketing' });
   at(120, { t: 'loan', d: 1 });
+  // staff walk/clean/repair deterministically every tick — lock them into the hash
+  at(130, { t: 'hireStaff', kind: 'handyman', x: 36, y: 65 });
+  at(132, { t: 'hireStaff', kind: 'mechanic', x: 38, y: 65 });
+  at(134, { t: 'hireStaff', kind: 'security', x: 40, y: 65 });
   return m;
 }
 

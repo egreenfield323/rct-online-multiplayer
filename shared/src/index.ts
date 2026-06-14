@@ -10,6 +10,7 @@ export * from './rides.js';
 export * from './coaster.js';
 export * from './templates.js';
 export * from './peeps.js';
+export * from './staff.js';
 export * from './economy.js';
 export * from './research.js';
 export * from './commands.js';

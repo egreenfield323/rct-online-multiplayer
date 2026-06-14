@@ -2,12 +2,13 @@ import { MONTH_TICKS } from '@park/shared';
 import { Camera } from './render/iso.js';
 import { generateSprites, PLAYER_COLORS } from './render/sprites.js';
 import { render } from './render/renderer.js';
-import { drawGhost, drawPeers } from './render/overlay.js';
+import { drawGhost, drawPeers, drawCarriedPeep } from './render/overlay.js';
 import { Session } from './session.js';
 import { Tools } from './tools.js';
 import { Input } from './input.js';
 import { UI } from './ui/ui.js';
 import { autosave } from './save.js';
+import { audio } from './audio.js';
 import './ui/style.css';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game')!;
@@ -30,7 +31,15 @@ const ui = new UI(document.querySelector('#ui')!, session, tools, () => {
   // center on the park entrance when a park starts
   started = true;
   centered = false;
+  audio.startMusic();
 });
+
+// audio needs a user gesture to start; also click-feedback on every UI button
+document.addEventListener('pointerdown', (e) => {
+  audio.unlock();
+  const t = e.target as HTMLElement | null;
+  if (t?.closest?.('button')) audio.sfx('click');
+}, { capture: true });
 
 let started = false;
 let centered = false;
@@ -74,6 +83,12 @@ function loop(now: number): void {
   if (g) drawGhost(ctx, w, g, '#ffe082');
   drawPeers(ctx, w, session.peers, now);
 
+  // a guest being picked up / dragged follows the cursor
+  if (tools.carriedPeep !== null && tools.hover) {
+    const peep = w.peeps.find((p) => p.id === tools.carriedPeep);
+    if (peep) drawCarriedPeep(ctx, w, peep, tools.hover.wx, tools.hover.wy);
+  }
+
   // UI refresh ~5 Hz
   if (frame % 12 === 0) ui.update();
 
@@ -93,7 +108,7 @@ requestAnimationFrame(loop);
 // headless / screenshot debugging hook (Playwright-friendly)
 declare global {
   interface Window {
-    __game: { session: Session; tools: Tools; cam: Camera; colors: string[] };
+    __game: { session: Session; tools: Tools; cam: Camera; input: Input; colors: string[] };
   }
 }
-window.__game = { session, tools, cam, colors: PLAYER_COLORS };
+window.__game = { session, tools, cam, input, colors: PLAYER_COLORS };

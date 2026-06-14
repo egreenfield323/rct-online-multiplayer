@@ -2,6 +2,8 @@ import { World, Ride, Peep, Dir, ti, inMap, DX, DY } from './types.js';
 import { rideDef } from './catalog.js';
 import { buildableFlat, corners } from './terrain.js';
 import { addMessage } from './world.js';
+import { chance } from './rng.js';
+import { BREAKDOWN_CHANCE } from './constants.js';
 
 // ---------------------------------------------------------------- placement
 
@@ -243,9 +245,37 @@ export function unloadRiders(w: World, ride: Ride): void {
   ride.riders = [];
 }
 
+function breakdown(w: World, ride: Ride): void {
+  ride.broken = true;
+  ride.breakdownT = 0;
+  ride.phase = 'idle';
+  addMessage(w, `${ride.name} has broken down! Send a mechanic.`, 'warn');
+  for (const id of ride.queue) {
+    const p = w.peeps.find((q) => q.id === id);
+    if (p) p.thought = 'This ride is broken down!';
+  }
+}
+
 export function tickFlatRide(w: World, ride: Ride): void {
   const def = rideDef(ride.type);
   if (def.category === 'stall' || def.category === 'coaster') return;
+  if (ride.broken) {
+    if (ride.riders.length > 0) unloadRiders(w, ride);
+    ride.phase = 'idle';
+    // the occasional fed-up guest abandons the queue of a stuck ride
+    if (ride.queue.length > 0 && chance(w, 0.004)) {
+      const pid = ride.queue.shift()!;
+      for (const q of w.peeps) if (q.state === 'queueing' && q.rideId === ride.id) q.queuePos--;
+      const p = w.peeps.find((x) => x.id === pid);
+      if (p) {
+        p.state = 'walking'; p.goal = 'none'; p.rideId = -1; p.queuePos = -1; p.plan = [];
+        p.thought = 'I gave up waiting.';
+        p.happiness = Math.max(0, p.happiness - 10);
+        p.cooldown = 120;
+      }
+    }
+    return;
+  }
   if (!ride.open) {
     if (ride.riders.length > 0) unloadRiders(w, ride);
     ride.phase = 'idle';
@@ -255,6 +285,7 @@ export function tickFlatRide(w: World, ride: Ride): void {
   switch (ride.phase) {
     case 'idle':
       if (ride.queue.length > 0) {
+        if (chance(w, BREAKDOWN_CHANCE)) { breakdown(w, ride); break; }
         ride.phase = 'loading';
         ride.timer = 0;
       }
